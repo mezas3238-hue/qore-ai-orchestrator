@@ -20,7 +20,7 @@ RESUME_WORKFLOW = resume.RESUME_WORKFLOW
 REARM_WORKFLOW = "qore-autonomy-rearm.yml"
 REARM_CONFIRMATION = "REARM_BOUNDED_AUTONOMY"
 REARM_REQUEST_SCHEMA = "qore.autonomy.rearm.request.v1"
-REARM_REQUEST_PATH = "recovery/autonomy-rearm-current.json"
+REARM_REQUEST_PATH = "recovery/rearm/autonomy-rearm-current.json"
 MAX_REARM_SCAN = 40
 ALLOWED_STOP_REASONS = {
     "AUTO_RESUME_CYCLE_CAP_REACHED",
