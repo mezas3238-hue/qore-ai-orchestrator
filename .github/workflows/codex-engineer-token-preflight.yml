@@ -1,0 +1,38 @@
+name: QORE Codex engineer token preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/codex-engineer-token-preflight.yml"
+      - "scripts/preflight_codex_engineer_token.py"
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Verify Codex engineer secret is configured
+        env:
+          QORE_CODEX_ENGINEER_TOKEN: ${{ secrets.QORE_CODEX_ENGINEER_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$QORE_CODEX_ENGINEER_TOKEN"
+          echo "QORE_CODEX_ENGINEER_TOKEN is configured."
+
+      - name: Verify bounded qore-core engineering permissions without mutation
+        env:
+          QORE_CODEX_ENGINEER_TOKEN: ${{ secrets.QORE_CODEX_ENGINEER_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/preflight_codex_engineer_token.py
