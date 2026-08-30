@@ -65,10 +65,12 @@ jobs:
             scripts/run_codex_engineer_worker_v2.py \
             scripts/publish_codex_candidate_v2.py \
             scripts/build_reviewer_package.py \
+            scripts/build_reviewer_package_public_logs.py \
             scripts/dispatch_reviewer_request.py \
             scripts/dispatch_reviewer_request_recovery.py \
             scripts/prepare_reviewer_recovery.py \
             scripts/trigger_reviewer_recovery.py \
+            scripts/trigger_reviewer_recovery_retry.py \
             scripts/resume_after_agent_completion.py \
             scripts/rearm_autonomy.py
 
@@ -146,6 +148,7 @@ jobs:
           grep -F "dispatch_codex_worker.py" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "codex_worker_mode" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "QORE_CORE_READ_TOKEN:" .github/workflows/qore-architect-autonomous-v2.yml
+          grep -F "build_reviewer_package_public_logs.py" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "workflow_run:" .github/workflows/qore-agent-completion-resume.yml
           grep -F "repository_dispatch:" .github/workflows/qore-agent-completion-resume.yml
           grep -F "qore_agent_completion_v1" .github/workflows/qore-agent-completion-resume.yml
@@ -162,8 +165,12 @@ jobs:
           grep -F '"gpt-5.3-codex"' scripts/resume_after_agent_completion.py
           grep -F "LOOP_SIGNATURE_REPEATED_PACKAGE" scripts/resume_after_agent_completion.py
           grep -F "qore-reviewer-dispatch-recovery-trigger" .github/workflows/qore-reviewer-recovery-trigger.yml
+          grep -F "trigger_reviewer_recovery_retry.py" .github/workflows/qore-reviewer-recovery-trigger.yml
           grep -F "github.event.workflow_run.path == '.github/workflows/qore-architect-autonomous-v2.yml'" .github/workflows/qore-reviewer-recovery-trigger.yml
           grep -F "QORE_CORE_READ_TOKEN:" .github/workflows/qore-architect-review-recovery-v1.yml
+          grep -F "build_reviewer_package_public_logs.py" .github/workflows/qore-architect-review-recovery-v1.yml
+          grep -F "MAX_RECOVERY_ATTEMPTS = 2" scripts/trigger_reviewer_recovery_retry.py
+          grep -F "public transport is restricted to exact job-log endpoints" scripts/build_reviewer_package_public_logs.py
           grep -F "QORE-DEEPSEEK-REVIEW package=" scripts/dispatch_reviewer_request_recovery.py
           ! grep -F "OPENAI_SOL_API_KEY" .github/workflows/qore-architect-review-recovery-v1.yml
           ! grep -F "run_codex_engineer_plan_v2.py" .github/workflows/qore-architect-autonomous-v2.yml
