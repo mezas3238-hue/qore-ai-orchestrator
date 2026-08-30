@@ -3,6 +3,6 @@
   "failed_architect_run_id": 33338976459,
   "source_rearm_run_id": 33338967360,
   "confirmation": "RECOVER_INCOMPLETE_SOL",
-  "reason": "User explicitly authorized continuing until all existing orchestration defects are resolved. Recover the pinned legacy incomplete Sol seed after incomplete-response hardening 044, bounded post-spend recovery 045, and static-gate certification 047 were integrated and post-merge checks passed.",
+  "reason": "User explicitly authorized continuing until all existing orchestration defects are resolved. Retry the same pinned legacy incomplete Sol recovery after resume run 33341024279 failed closed before producing any receipt or child because depth-1 git-show routing selected the wrong controller; exact push-event routing is now integrated and post-merge static checks passed.",
   "production_authority": false
 }
