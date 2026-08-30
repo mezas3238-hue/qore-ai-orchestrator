@@ -131,11 +131,18 @@ jobs:
           print("Snapshot, reviewer-state, and protection binding verified before spend.")
           PY
 
+      - name: Build bounded model-facing context
+        run: |
+          set -euo pipefail
+          python3 scripts/build_model_context.py \
+            --snapshot artifacts/qore-state.json \
+            --output artifacts/qore-model-context.json
+
       - name: Select adaptive Sol reasoning effort
         id: reasoning
         run: |
           set -euo pipefail
-          python3 scripts/select_sol_reasoning.py \
+          python3 scripts/select_sol_reasoning_v2.py \
             --snapshot artifacts/qore-state.json \
             --mode '${{ inputs.sol_reasoning_effort }}' \
             --output artifacts/sol-reasoning-policy.json \
@@ -148,8 +155,8 @@ jobs:
           SOL_MAX_OUTPUT_TOKENS: ${{ steps.reasoning.outputs.max_output_tokens }}
         run: |
           set -euo pipefail
-          python3 scripts/run_sol_architect.py \
-            --snapshot artifacts/qore-state.json \
+          python3 scripts/run_sol_architect_v2.py \
+            --snapshot artifacts/qore-model-context.json \
             --charter charters/SOL-PRINCIPAL-ARCHITECT.md \
             --schema schemas/architect_decision.schema.json \
             --output artifacts/architect-decision-initial.json \
@@ -180,8 +187,8 @@ jobs:
           SOL_MAX_OUTPUT_TOKENS: ${{ steps.escalation.outputs.max_output_tokens }}
         run: |
           set -euo pipefail
-          python3 scripts/run_sol_architect.py \
-            --snapshot artifacts/qore-state.json \
+          python3 scripts/run_sol_architect_v2.py \
+            --snapshot artifacts/qore-model-context.json \
             --charter charters/SOL-PRINCIPAL-ARCHITECT.md \
             --schema schemas/architect_decision.schema.json \
             --output artifacts/architect-decision.json \
@@ -206,8 +213,8 @@ jobs:
           OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
         run: |
           set -euo pipefail
-          python3 scripts/run_codex_engineer_plan.py \
-            --snapshot artifacts/qore-state.json \
+          python3 scripts/run_codex_engineer_plan_v2.py \
+            --snapshot artifacts/qore-model-context.json \
             --decision artifacts/architect-decision.json \
             --charter charters/CODEX-PRINCIPAL-ENGINEER.md \
             --schema schemas/codex_plan.schema.json \
@@ -245,6 +252,12 @@ jobs:
           {
             echo "# QORE Architect cycle"
             echo
+            if [[ -f artifacts/qore-model-context.json ]]; then
+              echo "## Model context metrics"
+              echo '```json'
+              python3 -c 'import json; c=json.load(open("artifacts/qore-model-context.json")); print(json.dumps(c.get("metrics", {}), indent=2, sort_keys=True))'
+              echo '```'
+            fi
             if [[ -f artifacts/external-reviewer-state.json ]]; then
               echo "## External reviewer state"
               echo '```json'
