@@ -28,6 +28,14 @@ ALLOWED_REVIEWERS = {
     "mezas3238-hue/qore-claude-reviewer": "CLAUDE_CODE",
     "mezas3238-hue/qore-deepseek-reviewer": "DEEPSEEK",
 }
+REVIEWER_WORKFLOW_NAMES = {
+    "mezas3238-hue/qore-claude-reviewer": "Claude QORE review",
+    "mezas3238-hue/qore-deepseek-reviewer": "DeepSeek QORE review",
+}
+REVIEWER_PACKAGE_RES = {
+    "CLAUDE_CODE": re.compile(r"^QORE-SOL-[0-9a-f]{12}-CLAUDE-R(?P<run_id>[1-9][0-9]*)$"),
+    "DEEPSEEK": re.compile(r"^QORE-SOL-[0-9a-f]{12}-DS-(?:EXPERT|CODER)-R(?P<run_id>[1-9][0-9]*)$"),
+}
 PACKAGE_RE = re.compile(r"^QORE-CODEX-[0-9a-f]{12}-[0-9a-f]{16}$")
 REVIEW_PACKAGE_RE = re.compile(r"^QORE-SOL-[0-9a-f]{12}-(?:CLAUDE|DS-(?:EXPERT|CODER))-R(?P<run_id>[1-9][0-9]*)$")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -37,6 +45,9 @@ MAX_JSON_BYTES = 300_000
 MAX_RECEIPT_SCAN = 40
 DEFAULT_MAX_AUTO_RESUMES = 3
 DEFAULT_MAX_ESTIMATED_SPEND_USD = Decimal("5.00")
+DEFAULT_MAX_SOL_CALLS = 12
+DEFAULT_MAX_CODEX_JOBS = 3
+MAX_SOL_CALLS_PER_ARCHITECT_RUN = 3
 UNKNOWN_CODEX_COST_RESERVE_USD = Decimal("1.90")
 UNKNOWN_SOL_PASS_RESERVE_USD = Decimal("1.25")
 
@@ -228,6 +239,18 @@ def reviewer_parent_run(package_id: str) -> int:
     return int(match.group("run_id"))
 
 
+def reviewer_package_from_title(title: Any, workflow_name: str, actor: str) -> str:
+    pattern = REVIEWER_PACKAGE_RES.get(actor)
+    if pattern is None:
+        raise ResumeError("reviewer actor has no package contract")
+    prefix = f"{workflow_name} · "
+    value = str(title or "")
+    package_id = value[len(prefix):].strip() if value.startswith(prefix) else ""
+    if pattern.fullmatch(package_id) is None:
+        raise ResumeError("reviewer workflow title is not bound to an exact package")
+    return package_id
+
+
 def event_key(actor: str, repo: str, run_id: int, attempt: int) -> str:
     return f"{actor}:{repo}:{run_id}:{attempt}"
 
@@ -301,7 +324,8 @@ def _decode_content(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict) or not isinstance(payload.get("content"), str):
         raise ResumeError("reviewer request content is unavailable")
     try:
-        decoded = base64.b64decode(payload["content"]).decode("utf-8")
+        encoded = "".join(payload["content"].split())
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
         value = json.loads(decoded)
     except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
         raise ResumeError("reviewer request content is invalid") from exc
@@ -323,12 +347,26 @@ def parse_reviewer_event(event: dict[str, Any], reviewer_token: str) -> dict[str
     package_id = payload.get("package_id")
     if type(run_id) is not int or type(attempt) is not int or attempt <= 0 or not isinstance(package_id, str):
         raise ResumeError("reviewer callback identity is invalid")
+    package_pattern = REVIEWER_PACKAGE_RES.get(actor)
+    if package_pattern is None or package_pattern.fullmatch(package_id) is None:
+        raise ResumeError("reviewer callback package does not match actor contract")
     parent_run_id = reviewer_parent_run(package_id)
     api = f"https://api.github.com/repos/{repo}"
     run = api_json(reviewer_token, api, f"/actions/runs/{run_id}")
     if not isinstance(run, dict):
         raise ResumeError("reviewer live run payload is invalid")
     _validate_run_identity(run, run_id, attempt)
+    workflow_name = REVIEWER_WORKFLOW_NAMES[repo]
+    if run.get("name") != workflow_name or run.get("event") != "workflow_dispatch":
+        raise ResumeError("reviewer run origin is not trusted")
+    if run.get("head_branch") != "main":
+        raise ResumeError("reviewer run did not execute from reviewer main")
+    run_package = reviewer_package_from_title(run.get("display_title"), workflow_name, actor)
+    if run_package != package_id:
+        raise ResumeError("reviewer run title/package binding failed")
+    conclusion = run.get("conclusion")
+    if conclusion is not None and not isinstance(conclusion, str):
+        raise ResumeError("reviewer conclusion is invalid")
     head_sha = run.get("head_sha")
     encoded = urllib.parse.quote("requests/current.json", safe="/")
     request_payload = api_json(reviewer_token, api, f"/contents/{encoded}?ref={head_sha}")
@@ -347,7 +385,7 @@ def parse_reviewer_event(event: dict[str, Any], reviewer_token: str) -> dict[str
         "parent_architect_run_id": parent_run_id,
         "source_main_sha": expected_head,
         "run_head_sha": head_sha,
-        "conclusion": run.get("conclusion"),
+        "conclusion": conclusion,
         # Reviewer provider usage is intentionally not inferred here. The bridge exposes
         # completion, while Sol re-adjudicates semantics from repository evidence.
         "agent_cost_usd": Decimal("0"),
@@ -366,7 +404,7 @@ def architect_archive(token: str, run_id: int) -> bytes:
     return artifact_bytes(token, ORCH_REPO, run_id, f"qore-architect-v2-{run_id}")
 
 
-def architect_cost(archive: bytes) -> tuple[Decimal, list[str]]:
+def architect_cost(archive: bytes) -> tuple[Decimal, list[str], int]:
     usages: list[dict[str, Any]] = []
     response_ids: set[str] = set()
     cost = Decimal("0")
@@ -384,14 +422,18 @@ def architect_cost(archive: bytes) -> tuple[Decimal, list[str]]:
         cost += estimate_usage_cost(usage)
     if not usages:
         raise ResumeError("parent architect artifact lacks Sol usage evidence")
+    sol_calls = len(usages)
     reconstruction = extract_json(archive, "architect-decision-before-reconstruction.json", required=False)
-    if reconstruction is not None and len(usages) < 3:
+    if reconstruction is not None and len(usages) < MAX_SOL_CALLS_PER_ARCHITECT_RUN:
         # The current V2 workflow may overwrite an intermediate usage file during its
-        # bounded reconstruction pass. Reserve a conservative paid-pass amount rather
-        # than undercounting a possibly spent call.
+        # bounded reconstruction pass. Reserve one possible paid pass rather than
+        # undercounting a call that may already have been spent.
         cost += UNKNOWN_SOL_PASS_RESERVE_USD
+        sol_calls += 1
         notes.append("reserved_one_possible_overwritten_sol_pass")
-    return cost.quantize(Decimal("0.000001"), rounding=ROUND_UP), notes
+    if sol_calls > MAX_SOL_CALLS_PER_ARCHITECT_RUN:
+        raise ResumeError("parent architect exceeded the bounded Sol-call contract")
+    return cost.quantize(Decimal("0.000001"), rounding=ROUND_UP), notes, sol_calls
 
 
 def parent_package_binding(archive: bytes, completion: dict[str, Any]) -> None:
@@ -514,6 +556,9 @@ def build_receipt(
     mode: str,
     max_auto_resumes: int,
     max_spend: Decimal,
+    architect_sol_calls: int = 1,
+    max_sol_calls: int = DEFAULT_MAX_SOL_CALLS,
+    max_codex_jobs: int = DEFAULT_MAX_CODEX_JOBS,
 ) -> dict[str, Any]:
     key = event_key(completion["actor"], completion["repo"], completion["run_id"], completion["run_attempt"])
     duplicate = prior_event(receipts, key)
@@ -527,11 +572,16 @@ def build_receipt(
             "session_id": duplicate.get("session_id"),
             "cycle_index": duplicate.get("cycle_index"),
             "estimated_spend_usd": duplicate.get("estimated_spend_usd"),
+            "sol_calls_used": duplicate.get("sol_calls_used"),
+            "codex_jobs_used": duplicate.get("codex_jobs_used"),
             "dispatched": False,
             "child_architect_run_id": None,
             "stop_reason": "EXACT_COMPLETION_EVENT_ALREADY_RECEIPTED",
             "production_authority": False,
         }
+
+    if architect_sol_calls < 1 or architect_sol_calls > MAX_SOL_CALLS_PER_ARCHITECT_RUN:
+        raise ResumeError("architect Sol-call evidence violates bounded-run contract")
 
     prior = lineage_for_parent(receipts, completion["parent_architect_run_id"])
     if prior is None:
@@ -539,6 +589,8 @@ def build_receipt(
         cycle_index = 0
         cumulative = Decimal("0")
         package_history: list[str] = []
+        prior_sol_calls = 0
+        prior_codex_jobs = 0
     else:
         session_id = str(prior.get("session_id") or "")
         if not re.fullmatch(r"QORE-ORCH-R[1-9][0-9]*", session_id):
@@ -549,6 +601,8 @@ def build_receipt(
         if not isinstance(history_raw, list) or not all(isinstance(item, str) for item in history_raw):
             raise ResumeError("prior package history is invalid")
         package_history = list(history_raw)
+        prior_sol_calls = _nonnegative_int(prior.get("sol_calls_used"), "prior sol_calls_used")
+        prior_codex_jobs = _nonnegative_int(prior.get("codex_jobs_used"), "prior codex_jobs_used")
 
     if completion["package_id"] in package_history:
         stop_reason = "LOOP_SIGNATURE_REPEATED_PACKAGE"
@@ -558,11 +612,19 @@ def build_receipt(
 
     total = cumulative + architect_cost_usd + completion["agent_cost_usd"]
     total = total.quantize(Decimal("0.000001"), rounding=ROUND_UP)
+    sol_calls_used = prior_sol_calls + architect_sol_calls
+    codex_jobs_used = prior_codex_jobs + (1 if completion["actor"] == "CODEX" else 0)
     next_cycle = cycle_index + 1
     if not stop_reason and next_cycle > max_auto_resumes:
         stop_reason = "AUTO_RESUME_CYCLE_CAP_REACHED"
     if not stop_reason and total >= max_spend:
         stop_reason = "ESTIMATED_SPEND_CAP_REACHED"
+    if not stop_reason and sol_calls_used > max_sol_calls:
+        stop_reason = "SOL_CALL_CAP_EXCEEDED"
+    if not stop_reason and sol_calls_used + MAX_SOL_CALLS_PER_ARCHITECT_RUN > max_sol_calls:
+        stop_reason = "SOL_CALL_CAP_REACHED"
+    if not stop_reason and codex_jobs_used >= max_codex_jobs:
+        stop_reason = "CODEX_JOB_CAP_REACHED"
     if mode != "execute" and not stop_reason:
         stop_reason = "DRY_RUN_ONLY"
 
@@ -585,6 +647,11 @@ def build_receipt(
         "architect_cost_notes": architect_cost_notes,
         "agent_cost_usd": str(completion["agent_cost_usd"]),
         "agent_cost_kind": completion["agent_cost_kind"],
+        "sol_calls_used": sol_calls_used,
+        "max_sol_calls": max_sol_calls,
+        "sol_calls_reserved_per_architect_run": MAX_SOL_CALLS_PER_ARCHITECT_RUN,
+        "codex_jobs_used": codex_jobs_used,
+        "max_codex_jobs": max_codex_jobs,
         "package_history": package_history,
         "dispatched": False,
         "child_architect_run_id": None,
@@ -600,6 +667,8 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--max-auto-resumes", type=int, default=DEFAULT_MAX_AUTO_RESUMES)
     parser.add_argument("--max-estimated-spend-usd", default=str(DEFAULT_MAX_ESTIMATED_SPEND_USD))
+    parser.add_argument("--max-sol-calls", type=int, default=DEFAULT_MAX_SOL_CALLS)
+    parser.add_argument("--max-codex-jobs", type=int, default=DEFAULT_MAX_CODEX_JOBS)
     args = parser.parse_args()
     if args.max_auto_resumes < 1 or args.max_auto_resumes > 12:
         raise ResumeError("max-auto-resumes must be between 1 and 12")
@@ -609,6 +678,10 @@ def main() -> int:
         raise ResumeError("max-estimated-spend-usd is invalid") from exc
     if max_spend <= 0 or max_spend > Decimal("25.00"):
         raise ResumeError("max-estimated-spend-usd must be > 0 and <= 25")
+    if args.max_sol_calls < MAX_SOL_CALLS_PER_ARCHITECT_RUN or args.max_sol_calls > 36:
+        raise ResumeError("max-sol-calls must be between 3 and 36")
+    if args.max_codex_jobs < 1 or args.max_codex_jobs > 12:
+        raise ResumeError("max-codex-jobs must be between 1 and 12")
 
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if not token:
@@ -641,7 +714,7 @@ def main() -> int:
 
     archive = architect_archive(token, completion["parent_architect_run_id"])
     parent_package_binding(archive, completion)
-    sol_cost, sol_notes = architect_cost(archive)
+    sol_cost, sol_notes, sol_calls = architect_cost(archive)
     receipts = recent_receipts(token)
     receipt = build_receipt(
         completion,
@@ -651,6 +724,9 @@ def main() -> int:
         mode=args.mode,
         max_auto_resumes=args.max_auto_resumes,
         max_spend=max_spend,
+        architect_sol_calls=sol_calls,
+        max_sol_calls=args.max_sol_calls,
+        max_codex_jobs=args.max_codex_jobs,
     )
     if receipt.get("stop_reason") is None:
         child_run_id = dispatch_architect(token)
@@ -660,13 +736,15 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
-        "AGENT_RESUME_OK actor={} package={} dispatched={} session={} cycle={} spend={} stop={}".format(
+        "AGENT_RESUME_OK actor={} package={} dispatched={} session={} cycle={} spend={} sol_calls={} codex_jobs={} stop={}".format(
             receipt.get("actor"),
             receipt.get("package_id"),
             receipt.get("dispatched"),
             receipt.get("session_id"),
             receipt.get("cycle_index"),
             receipt.get("estimated_spend_usd"),
+            receipt.get("sol_calls_used"),
+            receipt.get("codex_jobs_used"),
             receipt.get("stop_reason"),
         )
     )
