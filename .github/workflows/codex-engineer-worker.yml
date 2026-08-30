@@ -1,8 +1,13 @@
 name: QORE Codex engineer worker
+run-name: Codex worker · ${{ inputs.package_id }}
 
 on:
   workflow_dispatch:
     inputs:
+      package_id:
+        description: Deterministic qore.codex engineering package identifier
+        required: true
+        type: string
       confirm_api_spend:
         description: Allow bounded GPT-5.3-Codex engineering API calls
         required: true
@@ -50,15 +55,21 @@ jobs:
       - name: Materialize and validate immutable engineering request
         env:
           CODEX_REQUEST_JSON: ${{ inputs.request_json }}
+          EXPECTED_PACKAGE_ID: ${{ inputs.package_id }}
         run: |
           set -euo pipefail
           mkdir -p artifacts workspace
           python3 - <<'PY'
-          import json, os
+          import json, os, re
           from pathlib import Path
           value = json.loads(os.environ["CODEX_REQUEST_JSON"])
+          package = os.environ["EXPECTED_PACKAGE_ID"]
+          if not re.fullmatch(r"QORE-CODEX-[0-9a-f]{12}-[0-9a-f]{16}", package):
+              raise SystemExit("invalid Codex package_id")
           if value.get("schema_version") != "qore.codex.engineering.request.v1":
               raise SystemExit("unexpected Codex engineering request schema")
+          if value.get("package_id") != package:
+              raise SystemExit("Codex package/input mismatch")
           if value.get("production_authority") is not False:
               raise SystemExit("Production authority is forbidden")
           contract = value.get("engineering_contract") or {}
@@ -177,6 +188,7 @@ jobs:
         run: |
           {
             echo "# QORE Codex engineer worker"
+            echo "Package: ${{ inputs.package_id }}"
             if [[ -f artifacts/codex-worker-result.json ]]; then
               echo "## Worker result"
               echo '```json'
