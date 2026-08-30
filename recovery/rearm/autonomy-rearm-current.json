@@ -1,0 +1,7 @@
+{
+  "schema_version": "qore.autonomy.rearm.request.v1",
+  "stopped_resume_run_id": 33336526081,
+  "confirmation": "REARM_BOUNDED_AUTONOMY",
+  "reason": "User explicitly authorized continuing until the autonomous orchestration and corrected Codex worker are fully operational; start one new bounded validation tranche from this eligible cycle-cap stop.",
+  "production_authority": false
+}
