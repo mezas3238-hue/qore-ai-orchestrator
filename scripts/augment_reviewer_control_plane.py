@@ -31,20 +31,21 @@ MAX_CLOSED_ISSUES = 8
 MAX_BODY_CHARS = 3500
 MAX_TECHNICAL_FILE_CHARS = 40_000
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+STABLE_MANIFEST_RE = re.compile(r"^QORE-DEEPSEEK-.*-STABLE\.json$")
+DEEPSEEK_STABLE_MANIFEST_DIR = "profiles"
 
 DEEPSEEK_AUTHORIZED_REVIEW_LANE_WORKFLOWS = (
     ".github/workflows/deepseek-auto-dispatch.yml",
     ".github/workflows/deepseek-connection-test.yml",
     ".github/workflows/deepseek-qore-review.yml",
 )
-DEEPSEEK_PROJECTION_FILES = (
+DEEPSEEK_PROJECTION_CONTRACT_FILES = (
     "scripts/run_review_with_meter.py",
     "scripts/deepseek_reviewer_v2_1_1_entrypoint.py",
     "scripts/deepseek_reviewer_v2_1_entrypoint.py",
-    "scripts/deepseek_reviewer_compact_budgeted_v20.py",
-    "scripts/deepseek_reviewer_compact_budgeted_v19.py",
-    "scripts/qg_package_contract.py",
-    *DEEPSEEK_AUTHORIZED_REVIEW_LANE_WORKFLOWS,
+    "scripts/exact_qg_evidence.py",
+    ".github/workflows/deepseek-auto-dispatch.yml",
+    ".github/workflows/deepseek-qore-review.yml",
 )
 
 
@@ -111,17 +112,33 @@ def _decode_text_content(payload: Any, label: str) -> str:
     return text
 
 
-def _contents_file(repo: str, path: str, token: str, ref: str) -> tuple[dict[str, Any], str]:
+def _contents_payload(repo: str, path: str, token: str, ref: str) -> dict[str, Any]:
     encoded = urllib.parse.quote(path, safe="/")
     payload = _api_json(repo, f"/contents/{encoded}", token, {"ref": ref})
-    if not isinstance(payload, dict):
-        raise ControlPlaneError(f"{repo}:{path}: contents response is invalid")
+    if not isinstance(payload, dict) or payload.get("type") != "file":
+        raise ControlPlaneError(f"{repo}:{path}: contents response is not a file")
+    return payload
+
+
+def _contents_metadata(repo: str, path: str, token: str, ref: str) -> dict[str, Any]:
+    payload = _contents_payload(repo, path, token, ref)
     blob_sha = _sha(payload.get("sha"), f"{repo}:{path}:blob")
     size = payload.get("size")
     if type(size) is not int or size < 0:
         raise ControlPlaneError(f"{repo}:{path}: size is invalid")
-    text = _decode_text_content(payload, f"{repo}:{path}")
-    return {"path": path, "blob_sha": blob_sha, "size": size}, text
+    return {"path": path, "blob_sha": blob_sha, "size": size}
+
+
+def _contents_file(repo: str, path: str, token: str, ref: str) -> tuple[dict[str, Any], str]:
+    payload = _contents_payload(repo, path, token, ref)
+    metadata = {
+        "path": path,
+        "blob_sha": _sha(payload.get("sha"), f"{repo}:{path}:blob"),
+        "size": payload.get("size"),
+    }
+    if type(metadata["size"]) is not int or metadata["size"] < 0:
+        raise ControlPlaneError(f"{repo}:{path}: size is invalid")
+    return metadata, _decode_text_content(payload, f"{repo}:{path}")
 
 
 def _main_identity(repo: str, token: str) -> dict[str, Any]:
@@ -241,19 +258,145 @@ def _require_markers(text: str, label: str, markers: tuple[str, ...]) -> None:
         raise ControlPlaneError(f"{label}: required live-contract markers missing: {missing!r}")
 
 
+def _manifest_mapping(value: Any, label: str) -> dict[str, str]:
+    if not isinstance(value, dict) or not value:
+        raise ControlPlaneError(f"{label}: expected non-empty path-to-blob mapping")
+    result: dict[str, str] = {}
+    for path, blob in value.items():
+        if not isinstance(path, str) or not path:
+            raise ControlPlaneError(f"{label}: path is invalid")
+        result[path] = _sha(blob, f"{label}:{path}")
+    return result
+
+
+def _deepseek_stable_manifest(
+    token: str, main_sha: str
+) -> tuple[dict[str, Any], dict[str, Any], str]:
+    listing = _api_json(DEEPSEEK_REPO, f"/contents/{DEEPSEEK_STABLE_MANIFEST_DIR}", token, {"ref": main_sha})
+    if not isinstance(listing, list):
+        raise ControlPlaneError("DeepSeek profiles directory listing is invalid")
+    stable_entries = [
+        item
+        for item in listing
+        if isinstance(item, dict)
+        and item.get("type") == "file"
+        and isinstance(item.get("name"), str)
+        and STABLE_MANIFEST_RE.fullmatch(item["name"]) is not None
+    ]
+    if len(stable_entries) != 1:
+        raise ControlPlaneError(
+            f"DeepSeek must expose exactly one STABLE profile manifest; found {len(stable_entries)}"
+        )
+    entry = stable_entries[0]
+    path = str(entry.get("path") or "")
+    if not path:
+        raise ControlPlaneError("DeepSeek STABLE manifest path is missing")
+    metadata, text = _contents_file(DEEPSEEK_REPO, path, token, main_sha)
+    listed_sha = _sha(entry.get("sha"), "DeepSeek STABLE manifest listing blob")
+    if metadata["blob_sha"] != listed_sha:
+        raise ControlPlaneError("DeepSeek STABLE manifest listing/content blob mismatch")
+    try:
+        manifest = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ControlPlaneError("DeepSeek STABLE manifest is invalid JSON") from exc
+    if not isinstance(manifest, dict):
+        raise ControlPlaneError("DeepSeek STABLE manifest must be an object")
+    return manifest, metadata, path
+
+
 def _deepseek_projection(token: str, main_sha: str) -> dict[str, Any]:
+    manifest, manifest_file, manifest_path = _deepseek_stable_manifest(token, main_sha)
+    if manifest.get("profile_id") != "QORE-DEEPSEEK-V2.1.1-STABLE":
+        raise ControlPlaneError("DeepSeek sole STABLE manifest has unexpected profile_id")
+    if manifest.get("status") != "stable" or manifest.get("model") != "deepseek-v4-pro":
+        raise ControlPlaneError("DeepSeek STABLE manifest status/model contract changed")
+
+    entrypoint = manifest.get("entrypoint")
+    entrypoint_blob = _sha(manifest.get("entrypoint_blob"), "DeepSeek stable entrypoint blob")
+    if entrypoint != "scripts/deepseek_reviewer_v2_1_1_entrypoint.py":
+        raise ControlPlaneError("DeepSeek STABLE entrypoint changed without collector recertification")
+
+    meter_contract = manifest.get("meter")
+    if not isinstance(meter_contract, dict):
+        raise ControlPlaneError("DeepSeek STABLE meter contract is missing")
+    meter_path = meter_contract.get("path")
+    if meter_path != "scripts/run_review_with_meter.py":
+        raise ControlPlaneError("DeepSeek STABLE meter path changed")
+    meter_blob = _sha(meter_contract.get("blob"), "DeepSeek STABLE meter blob")
+    if meter_contract.get("ordinary_route") != entrypoint or meter_contract.get("default_profile") != "stable":
+        raise ControlPlaneError("DeepSeek STABLE manifest does not govern the ordinary meter route")
+
+    exact_qg = manifest.get("exact_qg_contract")
+    if not isinstance(exact_qg, dict) or exact_qg.get("required") is not True:
+        raise ControlPlaneError("DeepSeek STABLE exact-QG contract is missing")
+    exact_qg_path = exact_qg.get("helper")
+    qg_contract_path = exact_qg.get("package_contract")
+    if exact_qg_path != "scripts/exact_qg_evidence.py" or qg_contract_path != "scripts/qg_package_contract.py":
+        raise ControlPlaneError("DeepSeek STABLE exact-QG helper contract changed")
+    exact_qg_blob = _sha(exact_qg.get("helper_blob"), "DeepSeek exact-QG helper blob")
+    qg_contract_blob = _sha(exact_qg.get("package_contract_blob"), "DeepSeek QG package contract blob")
+    if exact_qg.get("max_chars") != 8000:
+        raise ControlPlaneError("DeepSeek exact-QG transport bound changed")
+
+    alternate_profiles = manifest.get("alternate_profiles")
+    if not isinstance(alternate_profiles, dict):
+        raise ControlPlaneError("DeepSeek alternate profile contract is missing")
+    compact = alternate_profiles.get("compact-budgeted")
+    benchmark = alternate_profiles.get("benchmark-compact")
+    if not isinstance(compact, dict) or not isinstance(benchmark, dict):
+        raise ControlPlaneError("DeepSeek compact/benchmark alternate profile contract is missing")
+    if compact.get("ordinary_default") is not False or benchmark.get("ordinary_default") is not False:
+        raise ControlPlaneError("DeepSeek alternate profile cannot be an ordinary default")
+    compact_path = compact.get("entrypoint")
+    benchmark_path = benchmark.get("entrypoint")
+    if compact_path != "scripts/deepseek_reviewer_compact_budgeted_v20.py":
+        raise ControlPlaneError("DeepSeek compact alternate entrypoint changed")
+    compact_blob = _sha(compact.get("blob"), "DeepSeek compact alternate blob")
+    benchmark_blob = _sha(benchmark.get("blob"), "DeepSeek benchmark alternate blob")
+
+    declared_blobs = _manifest_mapping(manifest.get("engine_files"), "DeepSeek engine_files")
+    workflow_blobs = _manifest_mapping(manifest.get("workflows"), "DeepSeek workflows")
+    for path, blob in workflow_blobs.items():
+        previous = declared_blobs.get(path)
+        if previous is not None and previous != blob:
+            raise ControlPlaneError(f"DeepSeek manifest declares conflicting blobs for {path}")
+        declared_blobs[path] = blob
+    explicit = {
+        str(entrypoint): entrypoint_blob,
+        str(meter_path): meter_blob,
+        str(exact_qg_path): exact_qg_blob,
+        str(qg_contract_path): qg_contract_blob,
+        str(compact_path): compact_blob,
+        str(benchmark_path): benchmark_blob,
+    }
+    for path, blob in explicit.items():
+        previous = declared_blobs.get(path)
+        if previous is not None and previous != blob:
+            raise ControlPlaneError(f"DeepSeek manifest explicit/declared blob mismatch for {path}")
+        declared_blobs[path] = blob
+
     files: dict[str, dict[str, Any]] = {}
-    texts: dict[str, str] = {}
-    for path in DEEPSEEK_PROJECTION_FILES:
-        evidence, text = _contents_file(DEEPSEEK_REPO, path, token, main_sha)
+    for path, expected_blob in sorted(declared_blobs.items()):
+        evidence = _contents_metadata(DEEPSEEK_REPO, path, token, main_sha)
+        if evidence["blob_sha"] != expected_blob:
+            raise ControlPlaneError(
+                f"DeepSeek STABLE manifest blob drift for {path}: "
+                f"expected {expected_blob}, observed {evidence['blob_sha']}"
+            )
         files[path] = evidence
+
+    texts: dict[str, str] = {}
+    for path in DEEPSEEK_PROJECTION_CONTRACT_FILES:
+        evidence, text = _contents_file(DEEPSEEK_REPO, path, token, main_sha)
+        expected_blob = declared_blobs.get(path)
+        if expected_blob is None or evidence["blob_sha"] != expected_blob:
+            raise ControlPlaneError(f"DeepSeek contract file {path} is not manifest-bound")
         texts[path] = text
 
     meter = texts["scripts/run_review_with_meter.py"]
     stable = texts["scripts/deepseek_reviewer_v2_1_1_entrypoint.py"]
     v21 = texts["scripts/deepseek_reviewer_v2_1_entrypoint.py"]
-    compact_v20 = texts["scripts/deepseek_reviewer_compact_budgeted_v20.py"]
-    compact_v19 = texts["scripts/deepseek_reviewer_compact_budgeted_v19.py"]
+    exact_qg_text = texts["scripts/exact_qg_evidence.py"]
     review_workflow = texts[".github/workflows/deepseek-qore-review.yml"]
     auto_dispatch = texts[".github/workflows/deepseek-auto-dispatch.yml"]
 
@@ -263,9 +406,47 @@ def _deepseek_projection(token: str, main_sha: str) -> dict[str, Any]:
         (
             '"deepseek_reviewer_v2_1_1_entrypoint.py"',
             '"deepseek_reviewer_compact_budgeted_v20.py"',
-            'os.environ.get("DEEPSEEK_REVIEWER_PROFILE", "compact-budgeted")',
+            'os.environ.get("DEEPSEEK_REVIEWER_PROFILE", "stable")',
             'elif _REVIEWER_PROFILE == "compact-budgeted":',
             'elif _REVIEWER_PROFILE == "stable":',
+            'startswith("BENCHMARK-COMPACT-")',
+        ),
+    )
+    _require_markers(
+        stable,
+        "DeepSeek stable entrypoint",
+        (
+            "deepseek_reviewer_v2_0_entrypoint",
+            "deepseek_reviewer_v2_1_entrypoint",
+            "DEEPSEEK_MAX_MANDATORY_CHANGED_CHARS",
+            "DEEPSEEK_MAX_FINAL_EVIDENCE_CHARS",
+            "import exact_qg_evidence as exact_qg",
+            "v21.v13.build_baseline_evidence = _build_baseline_with_exact_qg",
+        ),
+    )
+    _require_markers(
+        v21,
+        "DeepSeek V2.1 reasoning contract",
+        (
+            '"DEEPSEEK_TOTAL_COMPLETION_TOKEN_BUDGET", "100000"',
+            '"DEEPSEEK_VERDICT_RESERVE_TOKENS", "12000"',
+            "thinking=True",
+            "thinking=False",
+            "v2_1_same_model_extractor=True",
+            "v2_1_flash_substitution=False",
+            "v2_1_cot_continuation=False",
+            'if stage == "final-fallback":',
+        ),
+    )
+    _require_markers(
+        exact_qg_text,
+        "DeepSeek stable exact-QG helper",
+        (
+            "_QG_EVIDENCE_MAX_CHARS = 8000",
+            "EXPECTED_QG_SUMMARY_JSON",
+            "authenticated_command_summaries",
+            "_validate_checkout_synthetic",
+            "Full command windows were parsed and validated internally",
         ),
     )
     _require_markers(
@@ -293,74 +474,64 @@ def _deepseek_projection(token: str, main_sha: str) -> dict[str, Any]:
             "gh workflow run deepseek-qore-review.yml",
         ),
     )
-    _require_markers(
-        stable,
-        "DeepSeek stable entrypoint",
-        (
-            "deepseek_reviewer_v2_0_entrypoint",
-            "deepseek_reviewer_v2_1_entrypoint",
-            "DEEPSEEK_MAX_MANDATORY_CHANGED_CHARS",
-            "DEEPSEEK_MAX_FINAL_EVIDENCE_CHARS",
-        ),
-    )
-    _require_markers(
-        v21,
-        "DeepSeek V2.1 reasoning contract",
-        (
-            '"DEEPSEEK_TOTAL_COMPLETION_TOKEN_BUDGET", "100000"',
-            '"DEEPSEEK_VERDICT_RESERVE_TOKENS", "12000"',
-            'thinking=True',
-            'thinking=False',
-            'v2_1_same_model_extractor=True',
-            'v2_1_flash_substitution=False',
-            'v2_1_cot_continuation=False',
-            'if stage == "final-fallback":',
-        ),
-    )
-    _require_markers(
-        compact_v19,
-        "DeepSeek compact QG correction",
-        (
-            "_QG_EVIDENCE_MAX_CHARS = 8000",
-            "Full command windows were parsed and validated internally",
-            "authenticated_command_summaries",
-            "compact QORE CI evidence exceeds its hard transport bound",
-        ),
-    )
-    _require_markers(
-        compact_v20,
-        "DeepSeek compact operational entrypoint",
-        (
-            "deepseek_reviewer_compact_budgeted_v19",
-            "_scanner_r62g_exact",
-        ),
-    )
 
-    authorized = [files[path] for path in DEEPSEEK_AUTHORIZED_REVIEW_LANE_WORKFLOWS]
-    if len(authorized) != 3:
-        raise ControlPlaneError("DeepSeek stable profile must expose exactly three review-lane workflows")
+    authorized: list[dict[str, Any]] = []
+    for path in DEEPSEEK_AUTHORIZED_REVIEW_LANE_WORKFLOWS:
+        evidence = files.get(path)
+        if evidence is None:
+            raise ControlPlaneError(f"DeepSeek stable manifest omits authorized review-lane workflow {path}")
+        authorized.append(evidence)
 
     return {
         "bound_main_sha": main_sha,
         "authoritative_model": "deepseek-v4-pro",
-        "operational_default": {
-            "profile": "compact-budgeted",
-            "entrypoint": "scripts/deepseek_reviewer_compact_budgeted_v20.py",
-            "selection_source": "scripts/run_review_with_meter.py",
+        "governance_alignment": True,
+        "stable_manifest": {
+            **manifest_file,
+            "path": manifest_path,
+            "stable_manifest_count": 1,
+            "profile_id": manifest["profile_id"],
+            "status": manifest["status"],
+            "model": manifest["model"],
+            "entrypoint": entrypoint,
+            "exact_blob_binding_verified": True,
         },
-        "stable_fallback": {
+        "operational_default": {
             "profile": "stable",
-            "entrypoint": "scripts/deepseek_reviewer_v2_1_1_entrypoint.py",
+            "entrypoint": entrypoint,
+            "selection_source": meter_path,
+            "manifest_governed": True,
+        },
+        "stable_contract": {
             "completion_budget_default": 100000,
             "verdict_reserve_default": 12000,
             "authoritative_analysis_thinking": True,
             "same_model_non_thinking_extractor": True,
             "flash_substitution": False,
             "cot_continuation": False,
-            "legacy_full_evidence_fallback": False,
+            "complete_changed_and_dependency_evidence_preserved": True,
+        },
+        "alternate_profiles": {
+            "compact-budgeted": {
+                "entrypoint": compact_path,
+                "ordinary_default": False,
+                "activation": compact.get("activation"),
+                "promoted_to_stable": False,
+            },
+            "benchmark-compact": {
+                "entrypoint": benchmark_path,
+                "ordinary_default": False,
+                "activation": benchmark.get("activation"),
+                "promoted_to_stable": False,
+            },
+        },
+        "governance_resolution": {
+            "stable_profile_recertified_and_live": True,
+            "compact_v20_equivalence_or_stable_promotion": "ABSENT_AND_NOT_REQUIRED_FOR_ORDINARY_ROUTE",
+            "ordinary_successor_requires_qore_governance": True,
         },
         "stable_profile_authorized_workflows": {
-            "count": 3,
+            "count": len(authorized),
             "files": authorized,
         },
         "binding_contract": {
@@ -377,8 +548,9 @@ def _deepseek_projection(token: str, main_sha: str) -> dict[str, Any]:
             "raw_qg_parsed_and_validated_internally": True,
             "transported_qg_evidence_max_chars": 8000,
             "transport_only_authenticated_summary_and_checkout_proof": True,
+            "stable_profile_bound": True,
         },
-        "files": [files[path] for path in DEEPSEEK_PROJECTION_FILES],
+        "files": [files[path] for path in sorted(files)],
     }
 
 
