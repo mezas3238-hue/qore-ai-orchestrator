@@ -3,6 +3,7 @@
   "additionalProperties": false,
   "properties": {
     "schema_version": {"type": "string", "const": "qore.codex.engineering.request.v1"},
+    "package_id": {"type": "string", "pattern": "^QORE-CODEX-[0-9a-f]{12}-[0-9a-f]{16}$"},
     "source_main_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "architect_run_id": {"type": "string"},
     "engineering_contract": {
@@ -22,5 +23,5 @@
     },
     "production_authority": {"type": "boolean", "const": false}
   },
-  "required": ["schema_version", "source_main_sha", "architect_run_id", "engineering_contract", "production_authority"]
+  "required": ["schema_version", "package_id", "source_main_sha", "architect_run_id", "engineering_contract", "production_authority"]
 }
