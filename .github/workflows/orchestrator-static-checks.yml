@@ -65,6 +65,7 @@ jobs:
             scripts/run_codex_engineer_worker_v2.py \
             scripts/publish_codex_candidate_v2.py \
             scripts/build_reviewer_package.py \
+            scripts/build_reviewer_package_frozen_qg.py \
             scripts/build_reviewer_package_public_logs.py \
             scripts/dispatch_reviewer_request.py \
             scripts/dispatch_reviewer_request_recovery.py \
@@ -149,6 +150,9 @@ jobs:
           grep -F "codex_worker_mode" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "QORE_CORE_READ_TOKEN:" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "build_reviewer_package_public_logs.py" .github/workflows/qore-architect-autonomous-v2.yml
+          grep -F "frozen_qg.main" scripts/build_reviewer_package_public_logs.py
+          grep -F "no exact frozen reviewer QG summary matches the live freeze" scripts/build_reviewer_package_frozen_qg.py
+          grep -F "live QG run no longer matches exact successful QORE CI" scripts/build_reviewer_package_frozen_qg.py
           grep -F "workflow_run:" .github/workflows/qore-agent-completion-resume.yml
           grep -F "repository_dispatch:" .github/workflows/qore-agent-completion-resume.yml
           grep -F "qore_agent_completion_v1" .github/workflows/qore-agent-completion-resume.yml
@@ -169,8 +173,7 @@ jobs:
           grep -F "github.event.workflow_run.path == '.github/workflows/qore-architect-autonomous-v2.yml'" .github/workflows/qore-reviewer-recovery-trigger.yml
           grep -F "QORE_CORE_READ_TOKEN:" .github/workflows/qore-architect-review-recovery-v1.yml
           grep -F "build_reviewer_package_public_logs.py" .github/workflows/qore-architect-review-recovery-v1.yml
-          grep -F "MAX_RECOVERY_ATTEMPTS = 2" scripts/trigger_reviewer_recovery_retry.py
-          grep -F "public transport is restricted to exact job-log endpoints" scripts/build_reviewer_package_public_logs.py
+          grep -F "MAX_RECOVERY_ATTEMPTS = 3" scripts/trigger_reviewer_recovery_retry.py
           grep -F "QORE-DEEPSEEK-REVIEW package=" scripts/dispatch_reviewer_request_recovery.py
           ! grep -F "OPENAI_SOL_API_KEY" .github/workflows/qore-architect-review-recovery-v1.yml
           ! grep -F "run_codex_engineer_plan_v2.py" .github/workflows/qore-architect-autonomous-v2.yml
