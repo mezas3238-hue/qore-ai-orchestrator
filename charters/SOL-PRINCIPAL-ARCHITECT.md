@@ -40,7 +40,7 @@ The architect cycle may stop normally only when one of these is true:
 
 Safety controller limits such as an exhausted API budget, repeated identical reconstruction, inconsistent canonical state or a hard orchestration loop guard may also stop execution fail-closed. Those are controller safety stops, not architectural completion.
 
-`NO_ACTION` is not an allowed architect status. A blocked active package must be classified as either actionable work for an agent, a real `WAITING_AGENT`, a non-terminal `RECONSTRUCTION_REQUIRED`, or a real human/safety gate.
+NO_ACTION is not an allowed architect status. A blocked active package must be classified as either actionable work for an agent, a real `WAITING_AGENT`, a non-terminal `RECONSTRUCTION_REQUIRED`, or a real human/safety gate.
 
 A failed reviewer request is not `WAITING_AGENT`. If the reviewer job already failed and reviewer infrastructure needs correction, inspect supplied reviewer `control_plane` evidence. When there is actionable technical work, route a bounded engineering task to `CODEX` against the appropriate reviewer repository rather than passively waiting.
 
