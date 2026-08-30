@@ -1,0 +1,175 @@
+name: QORE Codex completion replay
+run-name: Codex completion replay · ${{ github.event_name }} · ${{ github.run_id }}
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - recovery/codex-completion-current.json
+  pull_request:
+    paths:
+      - .github/workflows/qore-codex-completion-replay.yml
+      - .github/workflows/codex-engineer-worker.yml
+      - scripts/resume_after_agent_completion_v2.py
+      - tests/test_codex_repository_completion.py
+      - recovery/codex-completion-current.json
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  preflight:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout callback candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Validate explicit Codex callback contract
+        run: |
+          set -euo pipefail
+          grep -F "completion-callback:" .github/workflows/codex-engineer-worker.yml
+          grep -F '"actor": "CODEX"' .github/workflows/codex-engineer-worker.yml
+          grep -F 'qore_agent_completion_v1' .github/workflows/codex-engineer-worker.yml
+          grep -F "parse_codex_repository_event" scripts/resume_after_agent_completion_v2.py
+          python3 -m unittest discover -s tests -p 'test_codex_repository_completion.py' -v
+
+      - name: Validate replay request when present
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          path = Path("recovery/codex-completion-current.json")
+          if not path.exists():
+              print("No Codex completion replay request in candidate.")
+              raise SystemExit(0)
+          value = json.loads(path.read_text(encoding="utf-8"))
+          allowed = {
+              "schema_version",
+              "source_run_id",
+              "source_run_attempt",
+              "source_head_sha",
+              "package_id",
+          }
+          if not isinstance(value, dict) or set(value) != allowed:
+              raise SystemExit("Codex replay request keys are not exact")
+          if value["schema_version"] != "qore.codex.completion.replay.v1":
+              raise SystemExit("Codex replay schema is invalid")
+          if type(value["source_run_id"]) is not int or value["source_run_id"] <= 0:
+              raise SystemExit("Codex replay run id is invalid")
+          if type(value["source_run_attempt"]) is not int or value["source_run_attempt"] <= 0:
+              raise SystemExit("Codex replay run attempt is invalid")
+          if not isinstance(value["source_head_sha"], str) or re.fullmatch(r"[0-9a-f]{40}", value["source_head_sha"]) is None:
+              raise SystemExit("Codex replay source HEAD is invalid")
+          if not isinstance(value["package_id"], str) or re.fullmatch(r"QORE-CODEX-[0-9a-f]{12}-[0-9a-f]{16}", value["package_id"]) is None:
+              raise SystemExit("Codex replay package is invalid")
+          print("Codex completion replay request: PASS")
+          PY
+
+  replay:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout trusted orchestrator main
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Verify one-file activation and exact terminal Codex run
+        id: replay
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          CHANGED="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}" --jq '.files[].filename')"
+          test "$CHANGED" = "recovery/codex-completion-current.json"
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          value = json.loads(Path("recovery/codex-completion-current.json").read_text(encoding="utf-8"))
+          allowed = {
+              "schema_version",
+              "source_run_id",
+              "source_run_attempt",
+              "source_head_sha",
+              "package_id",
+          }
+          if not isinstance(value, dict) or set(value) != allowed:
+              raise SystemExit("Codex replay request keys are not exact")
+          if value["schema_version"] != "qore.codex.completion.replay.v1":
+              raise SystemExit("Codex replay schema is invalid")
+          run_id = value["source_run_id"]
+          attempt = value["source_run_attempt"]
+          head = value["source_head_sha"]
+          package = value["package_id"]
+          if type(run_id) is not int or run_id <= 0 or type(attempt) is not int or attempt <= 0:
+              raise SystemExit("Codex replay run identity is invalid")
+          if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}", head) is None:
+              raise SystemExit("Codex replay source HEAD is invalid")
+          if not isinstance(package, str) or re.fullmatch(r"QORE-CODEX-[0-9a-f]{12}-[0-9a-f]{16}", package) is None:
+              raise SystemExit("Codex replay package is invalid")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"run_id={run_id}\n")
+              output.write(f"attempt={attempt}\n")
+              output.write(f"head={head}\n")
+              output.write(f"package={package}\n")
+          PY
+
+          RUN_ID="$(jq -r '.source_run_id' recovery/codex-completion-current.json)"
+          ATTEMPT="$(jq -r '.source_run_attempt' recovery/codex-completion-current.json)"
+          HEAD_SHA="$(jq -r '.source_head_sha' recovery/codex-completion-current.json)"
+          PACKAGE="$(jq -r '.package_id' recovery/codex-completion-current.json)"
+          RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}")"
+          test "$(jq -r '.id' <<<"$RUN_JSON")" = "$RUN_ID"
+          test "$(jq -r '.run_attempt' <<<"$RUN_JSON")" = "$ATTEMPT"
+          test "$(jq -r '.path' <<<"$RUN_JSON")" = ".github/workflows/codex-engineer-worker.yml"
+          test "$(jq -r '.event' <<<"$RUN_JSON")" = "workflow_dispatch"
+          test "$(jq -r '.status' <<<"$RUN_JSON")" = "completed"
+          test "$(jq -r '.conclusion' <<<"$RUN_JSON")" = "success"
+          test "$(jq -r '.head_branch' <<<"$RUN_JSON")" = "main"
+          test "$(jq -r '.head_sha' <<<"$RUN_JSON")" = "$HEAD_SHA"
+          test "$(jq -r '.display_title' <<<"$RUN_JSON")" = "Codex worker · ${PACKAGE}"
+
+          JOBS="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/jobs?filter=latest&per_page=100")"
+          test "$(jq '[.jobs[] | select(.name == "worker" and .status == "completed" and .conclusion == "success")] | length' <<<"$JOBS")" = "1"
+          ARTIFACTS="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RUN_ID}/artifacts?per_page=100")"
+          test "$(jq --arg name "qore-codex-worker-${RUN_ID}" '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<<"$ARTIFACTS")" = "1"
+          echo "Exact historical Codex completion is replayable."
+
+      - name: Emit exact Codex completion repository dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.replay.outputs.run_id }}
+          ATTEMPT: ${{ steps.replay.outputs.attempt }}
+          PACKAGE: ${{ steps.replay.outputs.package }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg package "$PACKAGE" \
+            --argjson run_id "$RUN_ID" \
+            --argjson attempt "$ATTEMPT" \
+            '{event_type:"qore_agent_completion_v1",client_payload:{schema_version:"qore.agent.completion.v1",repository:$repository,actor:"CODEX",workflow_run_id:$run_id,workflow_run_attempt:$attempt,package_id:$package}}' \
+            > "$RUNNER_TEMP/codex-completion-replay.json"
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/dispatches" \
+            --input "$RUNNER_TEMP/codex-completion-replay.json"
+          echo "Exact Codex completion replay dispatch accepted."
