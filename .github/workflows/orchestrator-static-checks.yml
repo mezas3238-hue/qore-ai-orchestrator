@@ -107,6 +107,13 @@ jobs:
               "source_resume_run_id",
               "reason",
           }
+          codex_replay_allowed = {
+              "schema_version",
+              "source_run_id",
+              "source_run_attempt",
+              "source_head_sha",
+              "package_id",
+          }
           for path in sorted(Path("recovery").glob("*.json")):
               value = json.loads(path.read_text(encoding="utf-8"))
               if not isinstance(value, dict):
@@ -121,6 +128,9 @@ jobs:
                   head = value.get("expected_source_head_sha")
                   if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}", head) is None:
                       raise SystemExit(f"{path}: source HEAD is invalid")
+                  reason = value.get("reason")
+                  if not isinstance(reason, str) or not reason.strip():
+                      raise SystemExit(f"{path}: recovery reason is empty")
               elif schema == "qore.architect.pre_spend.recovery.request.v1":
                   if set(value) != pre_spend_allowed:
                       raise SystemExit(f"{path}: pre-spend recovery request keys are not exact")
@@ -136,11 +146,26 @@ jobs:
                       raise SystemExit(f"{path}: source resume run ID is invalid")
                   if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}", head) is None:
                       raise SystemExit(f"{path}: failed child HEAD is invalid")
+                  reason = value.get("reason")
+                  if not isinstance(reason, str) or not reason.strip():
+                      raise SystemExit(f"{path}: recovery reason is empty")
+              elif schema == "qore.codex.completion.replay.v1":
+                  if set(value) != codex_replay_allowed:
+                      raise SystemExit(f"{path}: Codex completion replay keys are not exact")
+                  run_id = value.get("source_run_id")
+                  attempt = value.get("source_run_attempt")
+                  head = value.get("source_head_sha")
+                  package = value.get("package_id")
+                  if type(run_id) is not int or run_id <= 0:
+                      raise SystemExit(f"{path}: Codex source run ID is invalid")
+                  if type(attempt) is not int or attempt <= 0:
+                      raise SystemExit(f"{path}: Codex source run attempt is invalid")
+                  if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}", head) is None:
+                      raise SystemExit(f"{path}: Codex source HEAD is invalid")
+                  if not isinstance(package, str) or re.fullmatch(r"QORE-CODEX-[0-9a-f]{12}-[0-9a-f]{16}", package) is None:
+                      raise SystemExit(f"{path}: Codex package is invalid")
               else:
                   raise SystemExit(f"{path}: recovery request schema is invalid")
-              reason = value.get("reason")
-              if not isinstance(reason, str) or not reason.strip():
-                  raise SystemExit(f"{path}: recovery reason is empty")
               print(f"recovery request ok: {path}")
           PY
 
@@ -172,6 +197,14 @@ jobs:
           grep -F "run_quality_gate" scripts/run_codex_engineer_worker_v2.py
           grep -F -- "--controller-qg" .github/workflows/codex-engineer-worker.yml
           grep -F "publish_codex_candidate_v2.py" .github/workflows/codex-engineer-worker.yml
+          grep -F "completion-callback:" .github/workflows/codex-engineer-worker.yml
+          grep -F 'qore_agent_completion_v1' .github/workflows/codex-engineer-worker.yml
+          grep -F '"actor": "CODEX"' .github/workflows/codex-engineer-worker.yml
+          grep -F "parse_codex_repository_event" scripts/resume_after_agent_completion_v2.py
+          grep -F "worker job is not exact completed success" scripts/resume_after_agent_completion_v2.py
+          grep -F "qore-codex-worker-" scripts/resume_after_agent_completion_v2.py
+          grep -F "QORE Codex completion replay" .github/workflows/qore-codex-completion-replay.yml
+          grep -F "recovery/codex-completion-current.json" .github/workflows/qore-codex-completion-replay.yml
           grep -F "actions: write" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "collect_codex_worker_state.py" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "augment_codex_worker_context.py" .github/workflows/qore-architect-autonomous-v2.yml
