@@ -68,6 +68,8 @@ jobs:
             --mode '${{ steps.mode.outputs.mode }}' \
             --max-auto-resumes 3 \
             --max-estimated-spend-usd 5.00 \
+            --max-sol-calls 12 \
+            --max-codex-jobs 3 \
             --output artifacts/qore-resume-receipt.json
 
       - name: Publish bounded resume summary
