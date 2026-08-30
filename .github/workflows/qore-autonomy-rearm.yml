@@ -1,0 +1,81 @@
+name: QORE autonomy budget rearm
+run-name: Rearm bounded autonomy · stopped resume ${{ inputs.stopped_resume_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      stopped_resume_run_id:
+        description: Exact completed QORE agent completion resume run that stopped on an eligible budget/cycle cap
+        required: true
+        type: string
+      confirm_rearm:
+        description: Explicitly authorize one new bounded Autonomous V2 session
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: qore-autonomy-budget-rearm
+  cancel-in-progress: false
+
+jobs:
+  rearm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Enforce explicit human rearm authorization
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          if [[ '${{ inputs.confirm_rearm }}' != 'true' ]]; then
+            echo "Bounded autonomy rearm was not explicitly confirmed." >&2
+            exit 23
+          fi
+          case '${{ inputs.stopped_resume_run_id }}' in
+            (*[!0-9]*|'') echo "stopped_resume_run_id must be a positive integer" >&2; exit 24;;
+          esac
+
+      - name: Checkout trusted orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Validate exact stopped receipt and dispatch one fresh bounded session
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          python3 scripts/rearm_autonomy.py \
+            --stopped-resume-run-id '${{ inputs.stopped_resume_run_id }}' \
+            --confirmation REARM_BOUNDED_AUTONOMY \
+            --output artifacts/qore-autonomy-rearm-receipt.json
+
+      - name: Publish rearm evidence
+        if: ${{ always() }}
+        run: |
+          {
+            echo "# QORE bounded autonomy rearm"
+            echo "Stopped resume run: ${{ inputs.stopped_resume_run_id }}"
+            if [[ -f artifacts/qore-autonomy-rearm-receipt.json ]]; then
+              echo '```json'
+              cat artifacts/qore-autonomy-rearm-receipt.json
+              echo '```'
+            else
+              echo "No rearm receipt was produced; the controller failed closed before dispatch."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable rearm receipt
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-autonomy-rearm-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30
