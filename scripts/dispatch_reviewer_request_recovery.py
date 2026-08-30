@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dispatch a reviewer package while safely superseding one terminal failed equivalent request."""
+"""Dispatch a reviewer package while safely superseding one terminal failed DeepSeek request."""
 
 from __future__ import annotations
 
@@ -163,6 +163,7 @@ def bound_runs_for_package(repo: str, package_id: str, token: str) -> list[dict[
 def semantic_publication_exists(pr_number: int, package_id: str, head: str, token: str) -> bool:
     if pr_number <= 0 or SHA_RE.fullmatch(head) is None:
         raise RecoveryDispatchError("semantic publication lookup identity is invalid")
+    marker = f"<!-- QORE-DEEPSEEK-REVIEW package={package_id} head={head} -->"
     endpoints = (
         f"https://api.github.com/repos/{QORE_REPO}/pulls/{pr_number}/reviews?per_page=100",
         f"https://api.github.com/repos/{QORE_REPO}/issues/{pr_number}/comments?per_page=100",
@@ -173,11 +174,7 @@ def semantic_publication_exists(pr_number: int, package_id: str, head: str, toke
         if not isinstance(payload, list):
             raise RecoveryDispatchError("qore-core publication evidence is invalid")
         for item in payload:
-            if not isinstance(item, dict):
-                continue
-            body = str(item.get("body") or "")
-            commit_id = item.get("commit_id")
-            if package_id in body and (commit_id in {None, head} or head in body):
+            if isinstance(item, dict) and marker in str(item.get("body") or ""):
                 return True
     return False
 
@@ -188,6 +185,8 @@ def terminal_failed_equivalent_is_retryable(
     candidate: dict[str, Any],
     token: str,
 ) -> tuple[bool, dict[str, Any] | None]:
+    if repo != DEEPSEEK_REPO:
+        return False, None
     prior_package = prior.get("package_id")
     candidate_package = candidate.get("package_id")
     if not isinstance(prior_package, str) or not prior_package:
