@@ -61,6 +61,9 @@ jobs:
               raise SystemExit("unexpected Codex engineering request schema")
           if value.get("production_authority") is not False:
               raise SystemExit("Production authority is forbidden")
+          contract = value.get("engineering_contract") or {}
+          if contract.get("target_repository") != "mezas3238-hue/qore-core":
+              raise SystemExit("worker V2 is restricted to qore-core")
           Path("artifacts/codex-request.json").write_text(
               json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
           )
@@ -101,12 +104,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run bounded GPT-5.3-Codex engineering worker
+      - name: Run bounded GPT-5.3-Codex engineering worker V2
         env:
           OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
         run: |
           set -euo pipefail
-          python3 scripts/run_codex_engineer_worker.py \
+          python3 scripts/run_codex_engineer_worker_v2.py \
             --repo-dir workspace/qore-core \
             --request artifacts/codex-request.json \
             --charter charters/CODEX-PRINCIPAL-ENGINEER.md \
@@ -152,7 +155,7 @@ jobs:
               "mypy": "SUCCESS",
               "pytest_coverage": "SUCCESS",
               "production_authority": False,
-          }, indent=2, sort_keys=True) + "\n")
+          }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
           PY
 
       - name: Publish green candidate through isolated GitHub authority
@@ -162,10 +165,11 @@ jobs:
         run: |
           set -euo pipefail
           test -f artifacts/codex-controller-qg.json
-          python3 scripts/publish_codex_candidate.py \
+          python3 scripts/publish_codex_candidate_v2.py \
             --repo-dir workspace/qore-core \
             --request artifacts/codex-request.json \
             --worker-result artifacts/codex-worker-result.json \
+            --controller-qg artifacts/codex-controller-qg.json \
             --output artifacts/codex-publication.json
 
       - name: Publish bounded worker summary
