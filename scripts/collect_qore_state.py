@@ -16,6 +16,7 @@ from typing import Any
 REPO = "mezas3238-hue/qore-core"
 API = f"https://api.github.com/repos/{REPO}"
 USER_AGENT = "qore-ai-orchestrator/1.0"
+MISSION_HEAD_CHARS = 3000
 
 
 def git(root: Path, *args: str) -> str:
@@ -46,6 +47,20 @@ def read_documents(root: Path, pattern: str) -> list[dict[str, str]]:
                 {
                     "path": path.relative_to(root).as_posix(),
                     "content": path.read_text(encoding="utf-8"),
+                }
+            )
+    return docs
+
+
+def read_document_heads(root: Path, pattern: str) -> list[dict[str, str]]:
+    docs: list[dict[str, str]] = []
+    for path in sorted(root.glob(pattern)):
+        if path.is_file():
+            content = path.read_text(encoding="utf-8")
+            docs.append(
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "head": content[:MISSION_HEAD_CHARS],
                 }
             )
     return docs
@@ -186,11 +201,7 @@ def main() -> int:
         ),
         "constitution_documents": read_documents(root, "docs/constitution/*.md"),
         "roadmap_documents": read_documents(root, "docs/roadmap/*.md"),
-        "mission_document_paths": [
-            p.relative_to(root).as_posix()
-            for p in sorted(root.glob("docs/missions/**/*.md"))
-            if p.is_file()
-        ],
+        "mission_document_heads": read_document_heads(root, "docs/missions/**/*.md"),
         "architecture_document_paths": [
             p.relative_to(root).as_posix()
             for p in sorted(root.glob("docs/architecture/**/*.md"))
@@ -205,8 +216,9 @@ def main() -> int:
     )
     print(f"QORE state snapshot: main={checkout_main_sha} tree={tree_sha}")
     print(
-        "roadmaps={} open_prs={} open_issues={} errors={} consistent={}".format(
+        "roadmaps={} missions={} open_prs={} open_issues={} errors={} consistent={}".format(
             len(snapshot["roadmap_documents"]),
+            len(snapshot["mission_document_heads"]),
             len(pulls),
             len(issues),
             len(errors),
