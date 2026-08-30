@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
@@ -87,6 +88,57 @@ class CodexWorkerV2Tests(unittest.TestCase):
         self.assertTrue(result["applied"])
         self.assertFalse(tools.last_quality_success)
         self.assertEqual(worker.changed_files(repo), ["src/example.py"])
+
+    def test_spend_equivalent_budget_does_not_treat_cached_replay_as_full_price(self) -> None:
+        historical = {
+            "input_tokens": 124147,
+            "cached_tokens": 91520,
+            "cache_write_tokens": 0,
+            "output_tokens": 778,
+            "total_tokens": 124925,
+        }
+        self.assertGreater(historical["total_tokens"], worker.MAX_TOTAL_TOKENS)
+        self.assertEqual(worker.spend_equivalent_tokens(historical), 48003)
+        self.assertLess(worker.spend_equivalent_tokens(historical), worker.MAX_TOTAL_TOKENS)
+
+    def test_spend_equivalent_budget_uses_output_and_cache_write_reserves(self) -> None:
+        usage = {
+            "input_tokens": 120,
+            "cached_tokens": 20,
+            "cache_write_tokens": 20,
+            "output_tokens": 10,
+        }
+        # 80 uncached + 2 cached-equivalent + 25 cache-write-equivalent + 80 output-equivalent.
+        self.assertEqual(worker.spend_equivalent_tokens(usage), 187)
+        with self.assertRaises(worker.WorkerError):
+            worker.spend_equivalent_tokens(
+                {"input_tokens": 10, "cached_tokens": 9, "cache_write_tokens": 2, "output_tokens": 0}
+            )
+
+    def test_old_tool_outputs_are_compacted_without_mutating_canonical_history(self) -> None:
+        old_output = json.dumps({"ok": True, "result": {"content": "OLD-SENSITIVE-CONTEXT" * 200}})
+        middle_output = json.dumps({"ok": True, "result": {"content": "middle"}})
+        latest_output = json.dumps({"ok": True, "result": {"content": "latest"}})
+        conversation = [
+            {"role": "user", "content": [{"type": "input_text", "text": "contract"}]},
+            {"type": "reasoning", "id": "r1", "summary": []},
+            {"type": "function_call", "name": "read_file", "call_id": "c1", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": old_output},
+            {"type": "function_call", "name": "search_text", "call_id": "c2", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c2", "output": middle_output},
+            {"type": "function_call", "name": "git_diff", "call_id": "c3", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c3", "output": latest_output},
+        ]
+        projected = worker.compact_conversation(conversation, keep_full=2)
+        compacted = json.loads(projected[3]["output"])
+        self.assertTrue(compacted["qore_compacted_tool_output"])
+        self.assertEqual(compacted["sha256"], hashlib.sha256(old_output.encode()).hexdigest())
+        self.assertEqual(compacted["original_chars"], len(old_output))
+        self.assertNotIn("OLD-SENSITIVE-CONTEXT", projected[3]["output"])
+        self.assertEqual(projected[5]["output"], middle_output)
+        self.assertEqual(projected[7]["output"], latest_output)
+        self.assertEqual(conversation[3]["output"], old_output)
+        self.assertEqual(worker.compact_conversation(conversation, keep_full=2), projected)
 
     def test_request_builder_restricts_worker_target(self) -> None:
         source = "a" * 40
