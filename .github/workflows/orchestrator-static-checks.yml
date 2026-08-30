@@ -56,6 +56,11 @@ jobs:
             scripts/run_codex_engineer_plan.py \
             scripts/run_codex_engineer_plan_v2.py \
             scripts/preflight_codex_engineer_token.py \
+            scripts/build_codex_engineering_request.py \
+            scripts/run_codex_engineer_worker.py \
+            scripts/run_codex_engineer_worker_v2.py \
+            scripts/publish_codex_candidate.py \
+            scripts/publish_codex_candidate_v2.py \
             scripts/build_reviewer_package.py \
             scripts/dispatch_reviewer_request.py
 
@@ -91,6 +96,8 @@ jobs:
           grep -F '`max`' charters/SOL-PRINCIPAL-ARCHITECT.md
           grep -F "You are the Principal Engineer" charters/CODEX-PRINCIPAL-ENGINEER.md
           grep -F "PLAN-ONLY" charters/CODEX-PRINCIPAL-ENGINEER.md
+          grep -F "BOUNDED WORKER" charters/CODEX-PRINCIPAL-ENGINEER.md
+          grep -F "second Quality Gate" charters/CODEX-PRINCIPAL-ENGINEER.md
           grep -F "No decision from this architect grants Production authority" charters/SOL-PRINCIPAL-ARCHITECT.md
           grep -F "QORE_REVIEWER_DISPATCH_TOKEN" .github/workflows/qore-architect-readonly.yml
           grep -F "external_dispatch_mode" .github/workflows/qore-architect-readonly.yml
@@ -101,6 +108,14 @@ jobs:
           grep -F "prompt_cache_key" scripts/run_sol_architect_v2.py
           grep -F "QORE_CODEX_ENGINEER_TOKEN" .github/workflows/codex-engineer-token-preflight.yml
           grep -F "no resource created" scripts/preflight_codex_engineer_token.py
+          grep -F "MAX_TURNS = 16" scripts/run_codex_engineer_worker_v2.py
+          grep -F "MAX_TOTAL_TOKENS = 120_000" scripts/run_codex_engineer_worker_v2.py
+          grep -F "run_quality_gate" scripts/run_codex_engineer_worker_v2.py
+          grep -F "--controller-qg" .github/workflows/codex-engineer-worker.yml
+          grep -F "publish_codex_candidate_v2.py" .github/workflows/codex-engineer-worker.yml
+          ! grep -F "QORE_CODEX_ENGINEER_TOKEN" scripts/run_codex_engineer_worker.py
+          ! grep -F "QORE_CODEX_ENGINEER_TOKEN" scripts/run_codex_engineer_worker_v2.py
+          ! grep -F "QORE_REVIEWER_DISPATCH_TOKEN" scripts/run_codex_engineer_worker_v2.py
           grep -F "contents: read" .github/workflows/qore-architect-readonly.yml
           ! grep -F "CLAUDE_CODE_OAUTH_TOKEN" .github/workflows/qore-architect-readonly.yml
           ! grep -F "DEEPSEEK_API_KEY" .github/workflows/qore-architect-readonly.yml
