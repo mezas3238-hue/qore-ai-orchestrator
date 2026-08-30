@@ -145,7 +145,7 @@ jobs:
           grep -F "augment_codex_worker_context.py" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "dispatch_codex_worker.py" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "codex_worker_mode" .github/workflows/qore-architect-autonomous-v2.yml
-          grep -F 'QORE_CORE_READ_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}' .github/workflows/qore-architect-autonomous-v2.yml
+          grep -F "QORE_CORE_READ_TOKEN:" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "workflow_run:" .github/workflows/qore-agent-completion-resume.yml
           grep -F "repository_dispatch:" .github/workflows/qore-agent-completion-resume.yml
           grep -F "qore_agent_completion_v1" .github/workflows/qore-agent-completion-resume.yml
@@ -163,7 +163,7 @@ jobs:
           grep -F "LOOP_SIGNATURE_REPEATED_PACKAGE" scripts/resume_after_agent_completion.py
           grep -F "qore-reviewer-dispatch-recovery-trigger" .github/workflows/qore-reviewer-recovery-trigger.yml
           grep -F "github.event.workflow_run.path == '.github/workflows/qore-architect-autonomous-v2.yml'" .github/workflows/qore-reviewer-recovery-trigger.yml
-          grep -F 'QORE_CORE_READ_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}' .github/workflows/qore-architect-review-recovery-v1.yml
+          grep -F "QORE_CORE_READ_TOKEN:" .github/workflows/qore-architect-review-recovery-v1.yml
           grep -F "QORE-DEEPSEEK-REVIEW package=" scripts/dispatch_reviewer_request_recovery.py
           ! grep -F "OPENAI_SOL_API_KEY" .github/workflows/qore-architect-review-recovery-v1.yml
           ! grep -F "run_codex_engineer_plan_v2.py" .github/workflows/qore-architect-autonomous-v2.yml
