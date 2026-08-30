@@ -43,10 +43,14 @@ jobs:
             scripts/collect_qore_state.py \
             scripts/collect_external_reviewer_state.py \
             scripts/merge_external_reviewer_state.py \
+            scripts/build_model_context.py \
             scripts/select_sol_reasoning.py \
+            scripts/select_sol_reasoning_v2.py \
             scripts/evaluate_sol_escalation.py \
             scripts/run_sol_architect.py \
+            scripts/run_sol_architect_v2.py \
             scripts/run_codex_engineer_plan.py \
+            scripts/run_codex_engineer_plan_v2.py \
             scripts/build_reviewer_package.py \
             scripts/dispatch_reviewer_request.py
 
@@ -71,7 +75,7 @@ jobs:
           set -euo pipefail
           python3 -m unittest discover -s tests -v
 
-      - name: Verify permanent role and security boundaries
+      - name: Verify permanent role, cost, and security boundaries
         run: |
           set -euo pipefail
           grep -F "sole source of truth" charters/SOL-PRINCIPAL-ARCHITECT.md
@@ -84,6 +88,9 @@ jobs:
           grep -F "QORE_REVIEWER_DISPATCH_TOKEN" .github/workflows/qore-architect-readonly.yml
           grep -F "external_dispatch_mode" .github/workflows/qore-architect-readonly.yml
           grep -F "collect_external_reviewer_state.py" .github/workflows/qore-architect-readonly.yml
+          grep -F "build_model_context.py" .github/workflows/qore-architect-readonly.yml
+          grep -F "qore-model-context.json" .github/workflows/qore-architect-readonly.yml
+          grep -F "prompt_cache_key" scripts/run_sol_architect_v2.py
           grep -F "contents: read" .github/workflows/qore-architect-readonly.yml
           ! grep -F "CLAUDE_CODE_OAUTH_TOKEN" .github/workflows/qore-architect-readonly.yml
           ! grep -F "DEEPSEEK_API_KEY" .github/workflows/qore-architect-readonly.yml
