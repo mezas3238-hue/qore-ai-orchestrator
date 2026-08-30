@@ -3,80 +3,71 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import select_architect_recovery_mode as routing
+import resume_after_agent_completion as base
 
 
 class ArchitectRecoveryRoutingTests(unittest.TestCase):
-    def event(self, *, added=None, modified=None, removed=None, ref="refs/heads/main"):
+    SHA = "a" * 40
+
+    def commit(self, *paths: str, sha: str | None = None):
         return {
-            "ref": ref,
-            "head_commit": {
-                "added": [] if added is None else added,
-                "modified": [] if modified is None else modified,
-                "removed": [] if removed is None else removed,
-            },
+            "sha": self.SHA if sha is None else sha,
+            "files": [{"filename": path} for path in paths],
         }
 
-    def test_added_post_spend_routes_only_post_spend(self):
-        self.assertEqual(
-            routing.select_mode(self.event(added=[routing.POST_SPEND_PATH])),
-            "post_spend",
-        )
-
-    def test_modified_post_spend_routes_only_post_spend(self):
-        self.assertEqual(
-            routing.select_mode(self.event(modified=[routing.POST_SPEND_PATH])),
-            "post_spend",
-        )
+    def test_post_spend_routes_from_exact_commit_file(self):
+        with patch.object(base, "api_json", return_value=self.commit(routing.POST_SPEND_PATH)):
+            self.assertEqual(routing.select_mode("token", self.SHA), "post_spend")
 
     def test_pre_spend_remains_supported(self):
-        self.assertEqual(
-            routing.select_mode(self.event(modified=[routing.PRE_SPEND_PATH])),
-            "pre_spend",
-        )
+        with patch.object(base, "api_json", return_value=self.commit(routing.PRE_SPEND_PATH)):
+            self.assertEqual(routing.select_mode("token", self.SHA), "pre_spend")
 
-    def test_duplicate_same_path_across_event_arrays_deduplicates(self):
-        event = self.event(
-            added=[routing.POST_SPEND_PATH],
-            modified=[routing.POST_SPEND_PATH],
-        )
-        self.assertEqual(routing.select_mode(event), "post_spend")
+    def test_commit_binding_mismatch_fails_closed(self):
+        with patch.object(base, "api_json", return_value=self.commit(routing.POST_SPEND_PATH, sha="b" * 40)):
+            with self.assertRaises(routing.RoutingError):
+                routing.select_mode("token", self.SHA)
 
     def test_multiple_paths_fail_closed(self):
-        with self.assertRaises(routing.RoutingError):
-            routing.select_mode(
-                self.event(
-                    modified=[routing.POST_SPEND_PATH, "docs/also-changed.md"],
-                )
-            )
+        with patch.object(
+            base,
+            "api_json",
+            return_value=self.commit(routing.POST_SPEND_PATH, "docs/also-changed.md"),
+        ):
+            with self.assertRaises(routing.RoutingError):
+                routing.select_mode("token", self.SHA)
 
     def test_unknown_single_path_fails_closed(self):
-        with self.assertRaises(routing.RoutingError):
-            routing.select_mode(self.event(modified=["recovery/unknown.json"]))
+        with patch.object(base, "api_json", return_value=self.commit("recovery/unknown.json")):
+            with self.assertRaises(routing.RoutingError):
+                routing.select_mode("token", self.SHA)
 
-    def test_non_main_push_fails_closed(self):
-        with self.assertRaises(routing.RoutingError):
-            routing.select_mode(
-                self.event(modified=[routing.POST_SPEND_PATH], ref="refs/heads/other")
-            )
+    def test_invalid_sha_fails_closed_without_api_call(self):
+        with patch.object(base, "api_json") as api:
+            with self.assertRaises(routing.RoutingError):
+                routing.select_mode("token", "not-a-sha")
+        api.assert_not_called()
 
-    def test_missing_or_invalid_head_commit_arrays_fail_closed(self):
-        with self.assertRaises(routing.RoutingError):
-            routing.select_mode({"ref": "refs/heads/main", "head_commit": {}})
-        with self.assertRaises(routing.RoutingError):
-            routing.select_mode(
-                {
-                    "ref": "refs/heads/main",
-                    "head_commit": {
-                        "added": [],
-                        "modified": "not-a-list",
-                        "removed": [],
-                    },
-                }
-            )
+    def test_missing_or_invalid_file_evidence_fails_closed(self):
+        for payload in (
+            {"sha": self.SHA},
+            {"sha": self.SHA, "files": "not-a-list"},
+            {"sha": self.SHA, "files": [{}]},
+            {"sha": self.SHA, "files": [{"filename": ""}]},
+        ):
+            with self.subTest(payload=payload), patch.object(base, "api_json", return_value=payload):
+                with self.assertRaises(routing.RoutingError):
+                    routing.select_mode("token", self.SHA)
+
+    def test_api_failure_propagates_fail_closed(self):
+        with patch.object(base, "api_json", side_effect=base.ResumeError("api failed")):
+            with self.assertRaises(base.ResumeError):
+                routing.select_mode("token", self.SHA)
 
 
 if __name__ == "__main__":
