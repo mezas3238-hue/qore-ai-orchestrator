@@ -13,10 +13,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-ALLOWED_REPOS = {
-    "mezas3238-hue/qore-claude-reviewer",
-    "mezas3238-hue/qore-deepseek-reviewer",
-}
+CLAUDE_REPO = "mezas3238-hue/qore-claude-reviewer"
+DEEPSEEK_REPO = "mezas3238-hue/qore-deepseek-reviewer"
+ALLOWED_REPOS = {CLAUDE_REPO, DEEPSEEK_REPO}
 USER_AGENT = "qore-ai-orchestrator/1.0"
 
 
@@ -34,7 +33,14 @@ def _headers(token: str) -> dict[str, str]:
     }
 
 
-def _request_json(url: str, token: str, *, method: str = "GET", payload: dict[str, Any] | None = None, allow_404: bool = False) -> Any:
+def _request_json(
+    url: str,
+    token: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    allow_404: bool = False,
+) -> Any:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, headers=_headers(token), data=data, method=method)
     try:
@@ -57,7 +63,15 @@ def _get_content(repo: str, path: str, token: str, *, allow_404: bool = False) -
     return _request_json(_content_url(repo, path) + "?ref=main", token, allow_404=allow_404)
 
 
-def _put_content(repo: str, path: str, token: str, *, content: str, message: str, sha: str | None = None) -> Any:
+def _put_content(
+    repo: str,
+    path: str,
+    token: str,
+    *,
+    content: str,
+    message: str,
+    sha: str | None = None,
+) -> Any:
     payload: dict[str, Any] = {
         "message": message,
         "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
@@ -66,6 +80,22 @@ def _put_content(repo: str, path: str, token: str, *, content: str, message: str
     if sha is not None:
         payload["sha"] = sha
     return _request_json(_content_url(repo, path), token, method="PUT", payload=payload)
+
+
+def equivalent_request(repo: str, prior: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    """Return True when requests/current.json already represents the same review stage."""
+    common = (
+        prior.get("pr_number") == candidate.get("pr_number")
+        and prior.get("expected_head") == candidate.get("expected_head")
+        and prior.get("expected_synthetic") == candidate.get("expected_synthetic")
+    )
+    if not common:
+        return False
+    if repo == CLAUDE_REPO:
+        return True
+    if repo == DEEPSEEK_REPO:
+        return prior.get("review_mode") == candidate.get("review_mode")
+    return False
 
 
 def main() -> int:
@@ -105,14 +135,19 @@ def main() -> int:
     if not isinstance(current, dict) or not isinstance(current.get("sha"), str):
         raise SystemExit("could not bind reviewer requests/current.json blob SHA")
     current_content = current.get("content")
+    prior: dict[str, Any] = {}
     if isinstance(current_content, str):
         try:
             decoded = base64.b64decode(current_content).decode("utf-8")
-            prior = json.loads(decoded)
+            loaded = json.loads(decoded)
+            prior = loaded if isinstance(loaded, dict) else {}
         except (ValueError, UnicodeError, json.JSONDecodeError):
             prior = {}
-        if isinstance(prior, dict) and prior.get("package_id") == package_id:
-            raise SystemExit("refusing duplicate reviewer package dispatch")
+
+    if prior.get("package_id") == package_id:
+        raise SystemExit("refusing duplicate reviewer package dispatch")
+    if equivalent_request(repo, prior, request_payload):
+        raise SystemExit("refusing equivalent reviewer stage already present in requests/current.json")
 
     prompt_commit = _put_content(
         repo,
@@ -138,7 +173,9 @@ def main() -> int:
         "request_commit": ((request_commit or {}).get("commit") or {}).get("sha"),
         "dispatch_trigger": "push requests/current.json -> existing reviewer auto-dispatch",
     }
-    Path(args.result_output).write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    Path(args.result_output).write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     print(f"REVIEW_DISPATCH_OK repo={repo} package={package_id}")
     return 0
 
