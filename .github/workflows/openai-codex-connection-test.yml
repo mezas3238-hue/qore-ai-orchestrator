@@ -12,22 +12,39 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: openai-codex-connection-test
+  cancel-in-progress: false
+
 jobs:
+  no-spend:
+    if: ${{ inputs.confirm_api_spend != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse API call until explicitly confirmed
+        run: |
+          echo "No API request executed. Re-run manually with confirm_api_spend=true to perform the bounded connection test."
+
   connection-test:
+    if: ${{ inputs.confirm_api_spend == true }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
     steps:
       - name: Checkout orchestrator infrastructure
-        uses: actions/checkout@v4
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
 
-      - name: No-spend guard
-        if: ${{ !inputs.confirm_api_spend }}
+      - name: Verify secret is configured without exposing it
+        env:
+          OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
         run: |
-          echo "No API request executed. Re-run manually with confirm_api_spend=true to perform the bounded connection test."
+          set -euo pipefail
+          test -n "$OPENAI_CODEX_API_KEY"
+          echo "OPENAI_CODEX_API_KEY is configured."
 
       - name: Run one bounded Codex API request
-        if: ${{ inputs.confirm_api_spend }}
         env:
           OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
           OPENAI_CODEX_MODEL: gpt-5.3-codex
