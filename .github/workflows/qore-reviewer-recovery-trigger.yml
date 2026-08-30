@@ -36,7 +36,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          python3 scripts/trigger_reviewer_recovery.py \
+          python3 scripts/trigger_reviewer_recovery_retry.py \
             --event "$GITHUB_EVENT_PATH" \
             --request recovery/reviewer-dispatch-current.json \
             --output artifacts/reviewer-recovery-trigger.json
