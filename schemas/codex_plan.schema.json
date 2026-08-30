@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "const": "qore.codex.plan.v1"},
+    "source_main_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "contract_id": {"type": "string"},
+    "status": {"type": "string", "enum": ["READY_TO_IMPLEMENT", "NEEDS_MORE_EVIDENCE", "BLOCKED"]},
+    "implementation_summary": {"type": "string"},
+    "target_files": {"type": "array", "items": {"type": "string"}},
+    "implementation_steps": {"type": "array", "items": {"type": "string"}},
+    "tests": {"type": "array", "items": {"type": "string"}},
+    "architecture_questions": {"type": "array", "items": {"type": "string"}},
+    "risks": {"type": "array", "items": {"type": "string"}},
+    "forbidden_confirmed": {"type": "array", "items": {"type": "string"}},
+    "production_authority": {"type": "boolean", "const": false}
+  },
+  "required": [
+    "schema_version", "source_main_sha", "contract_id", "status", "implementation_summary",
+    "target_files", "implementation_steps", "tests", "architecture_questions", "risks",
+    "forbidden_confirmed", "production_authority"
+  ]
+}

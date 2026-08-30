@@ -1,0 +1,61 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "const": "qore.architect.decision.v1"},
+    "source_main_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "status": {
+      "type": "string",
+      "enum": ["NO_ACTION", "ENGINEERING_TASK", "REVIEW_TASK", "HUMAN_DECISION_REQUIRED", "RECONSTRUCTION_REQUIRED"]
+    },
+    "roadmap_anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {"type": "string"},
+        "work_package": {"type": "string"},
+        "reason": {"type": "string"}
+      },
+      "required": ["path", "work_package", "reason"]
+    },
+    "decision": {"type": "string"},
+    "next_actor": {
+      "type": "string",
+      "enum": ["CODEX", "CLAUDE_CODE", "DEEPSEEK", "FABLE", "OPUS", "SOL", "HUMAN", "NONE"]
+    },
+    "engineering_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "contract_id": {"type": "string"},
+        "objective": {"type": "string"},
+        "scope": {"type": "array", "items": {"type": "string"}},
+        "acceptance": {"type": "array", "items": {"type": "string"}},
+        "required_tests": {"type": "array", "items": {"type": "string"}},
+        "forbidden": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["enabled", "contract_id", "objective", "scope", "acceptance", "required_tests", "forbidden"]
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "kind": {"type": "string"},
+          "value": {"type": "string"}
+        },
+        "required": ["kind", "value"]
+      }
+    },
+    "evidence_requests": {"type": "array", "items": {"type": "string"}},
+    "risk_gates": {"type": "array", "items": {"type": "string"}},
+    "production_authority": {"type": "boolean", "const": false}
+  },
+  "required": [
+    "schema_version", "source_main_sha", "status", "roadmap_anchor", "decision",
+    "next_actor", "engineering_contract", "evidence", "evidence_requests",
+    "risk_gates", "production_authority"
+  ]
+}

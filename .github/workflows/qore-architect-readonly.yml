@@ -1,0 +1,166 @@
+name: QORE Architect read-only cycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_api_spend:
+        description: Allow the bounded Sol architect API call for this cycle
+        required: true
+        type: boolean
+        default: false
+      enable_codex_plan:
+        description: If Sol routes to CODEX, allow one Codex PLAN-ONLY call
+        required: true
+        type: boolean
+        default: false
+      sol_reasoning_effort:
+        description: Sol reasoning effort for this architect cycle
+        required: true
+        type: choice
+        options:
+          - medium
+          - high
+          - xhigh
+        default: high
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qore-architect-readonly-cycle
+  cancel-in-progress: false
+
+jobs:
+  no-spend:
+    if: ${{ inputs.confirm_api_spend != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No model request made. Re-run with confirm_api_spend=true."
+
+  architect-cycle:
+    if: ${{ inputs.confirm_api_spend == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Verify OpenAI secrets without exposing values
+        env:
+          OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
+          OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$OPENAI_SOL_API_KEY"
+          if [[ "${{ inputs.enable_codex_plan }}" == "true" ]]; then
+            test -n "$OPENAI_CODEX_API_KEY"
+          fi
+          echo "Required OpenAI credentials are configured."
+
+      - name: Checkout live qore-core read-only
+        run: |
+          set -euo pipefail
+          git clone --depth 50 https://github.com/mezas3238-hue/qore-core.git workspace/qore-core
+          git -C workspace/qore-core checkout --detach origin/main
+          echo "QORE main: $(git -C workspace/qore-core rev-parse HEAD)"
+
+      - name: Build canonical QORE state snapshot
+        run: |
+          set -euo pipefail
+          python3 scripts/collect_qore_state.py \
+            --repo-dir workspace/qore-core \
+            --output artifacts/qore-state.json
+
+      - name: Validate snapshot before any model spend
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          state = json.loads(Path("artifacts/qore-state.json").read_text())
+          if state.get("snapshot_consistent") is not True:
+              raise SystemExit("QORE main changed or could not be bound during snapshot")
+          if state.get("collection_errors"):
+              raise SystemExit(f"QORE snapshot is incomplete: {state['collection_errors']}")
+          if not state.get("roadmap_documents"):
+              raise SystemExit("No canonical roadmap documents found")
+          if not state.get("constitution_documents"):
+              raise SystemExit("No QORE Constitution documents found")
+          protection = state.get("branch_protection") or {}
+          if protection.get("protected") is not True:
+              raise SystemExit("qore-core main is not observed as protected")
+          if "quality" not in protection.get("required_status_contexts", []):
+              raise SystemExit("required qore-core quality context was not observed")
+          print("Snapshot completeness and protection binding verified before spend.")
+          PY
+
+      - name: Run GPT-5.6 Sol Principal Architect
+        env:
+          OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
+          SOL_REASONING_EFFORT: ${{ inputs.sol_reasoning_effort }}
+        run: |
+          set -euo pipefail
+          python3 scripts/run_sol_architect.py \
+            --snapshot artifacts/qore-state.json \
+            --charter charters/SOL-PRINCIPAL-ARCHITECT.md \
+            --schema schemas/architect_decision.schema.json \
+            --output artifacts/architect-decision.json \
+            --usage-output artifacts/sol-usage.json
+
+      - name: Evaluate Sol routing
+        id: routing
+        run: |
+          set -euo pipefail
+          ACTOR="$(python3 -c 'import json; print(json.load(open("artifacts/architect-decision.json"))["next_actor"])')"
+          ENABLED="$(python3 -c 'import json; print(str(json.load(open("artifacts/architect-decision.json"))["engineering_contract"]["enabled"]).lower())')"
+          echo "actor=${ACTOR}" >> "$GITHUB_OUTPUT"
+          echo "contract_enabled=${ENABLED}" >> "$GITHUB_OUTPUT"
+          echo "Sol routed next action to: ${ACTOR}"
+
+      - name: Run Codex Principal Engineer plan
+        if: ${{ inputs.enable_codex_plan == true && steps.routing.outputs.actor == 'CODEX' && steps.routing.outputs.contract_enabled == 'true' }}
+        env:
+          OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
+        run: |
+          set -euo pipefail
+          python3 scripts/run_codex_engineer_plan.py \
+            --snapshot artifacts/qore-state.json \
+            --decision artifacts/architect-decision.json \
+            --charter charters/CODEX-PRINCIPAL-ENGINEER.md \
+            --schema schemas/codex_plan.schema.json \
+            --output artifacts/codex-plan.json \
+            --usage-output artifacts/codex-usage.json
+
+      - name: Publish bounded run summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "# QORE Architect read-only cycle"
+            echo
+            if [[ -f artifacts/architect-decision.json ]]; then
+              echo '```json'
+              cat artifacts/architect-decision.json
+              echo '```'
+            else
+              echo "Architect decision was not produced."
+            fi
+            if [[ -f artifacts/codex-plan.json ]]; then
+              echo
+              echo "## Codex plan"
+              echo '```json'
+              cat artifacts/codex-plan.json
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable cycle evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-architect-cycle-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
