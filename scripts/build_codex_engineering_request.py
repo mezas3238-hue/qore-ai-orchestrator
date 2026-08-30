@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -11,6 +12,12 @@ from typing import Any
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ALLOWED_TARGETS = {"mezas3238-hue/qore-core"}
+
+
+def package_id(source: str, contract: dict[str, Any]) -> str:
+    canonical = json.dumps(contract, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return f"QORE-CODEX-{source[:12]}-{digest}"
 
 
 def build(decision: dict[str, Any], orchestrator_run_id: str) -> dict[str, Any]:
@@ -34,6 +41,7 @@ def build(decision: dict[str, Any], orchestrator_run_id: str) -> dict[str, Any]:
         raise ValueError("architect decision attempted Production authority")
     return {
         "schema_version": "qore.codex.engineering.request.v1",
+        "package_id": package_id(source, contract),
         "source_main_sha": source,
         "architect_run_id": str(orchestrator_run_id),
         "engineering_contract": contract,
@@ -53,7 +61,8 @@ def main() -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(request, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
-        "CODEX_REQUEST_OK contract={} target={} main={}".format(
+        "CODEX_REQUEST_OK package={} contract={} target={} main={}".format(
+            request["package_id"],
             request["engineering_contract"]["contract_id"],
             request["engineering_contract"]["target_repository"],
             request["source_main_sha"],

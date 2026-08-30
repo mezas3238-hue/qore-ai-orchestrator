@@ -88,6 +88,21 @@ def _pending_run_observed(reviewer: dict[str, Any]) -> bool:
     )
 
 
+def _pending_codex_package(snapshot: dict[str, Any], package_id: str) -> bool:
+    state = snapshot.get("codex_worker_state")
+    if not isinstance(state, dict):
+        return False
+    active = state.get("active_runs")
+    if not isinstance(active, list):
+        return False
+    return any(
+        isinstance(run, dict)
+        and run.get("package_id") == package_id
+        and run.get("status") in {"queued", "in_progress"}
+        for run in active
+    )
+
+
 def _validate_wait(snapshot: dict[str, Any], wait: dict[str, Any]) -> None:
     actor = wait.get("actor")
     package_id = wait.get("package_id")
@@ -99,10 +114,10 @@ def _validate_wait(snapshot: dict[str, Any], wait: dict[str, Any]) -> None:
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("WAITING_AGENT requires a concrete wait reason")
 
-    # Codex is currently synchronous PLAN-ONLY. It cannot be a real wait boundary
-    # until a separate asynchronous Codex worker publishes a pending job state.
     if actor == "CODEX":
-        raise ValueError("Codex PLAN-ONLY is synchronous and cannot be a WAITING_AGENT state")
+        if not _pending_codex_package(snapshot, package_id):
+            raise ValueError("WAITING_AGENT Codex requires an exact queued/in-progress worker package")
+        return
 
     reviewer = _reviewer_for_actor(snapshot, actor)
     if reviewer is None:
@@ -191,29 +206,19 @@ def main() -> int:
     parser.add_argument("--snapshot", required=True)
     parser.add_argument("--github-output")
     args = parser.parse_args()
-
     decision = json.loads(Path(args.decision).read_text(encoding="utf-8"))
     snapshot = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
     try:
         validate(decision, snapshot)
     except ValueError as exc:
         raise SystemExit(f"ARCHITECT_CONTINUATION_INVALID: {exc}") from exc
-
     status = str(decision["status"])
     if args.github_output:
         with Path(args.github_output).open("a", encoding="utf-8") as handle:
             handle.write(f"status={status}\n")
             handle.write(f"actor={decision['next_actor']}\n")
-            handle.write(
-                "engineering_enabled={}\n".format(
-                    str(decision["engineering_contract"]["enabled"]).lower()
-                )
-            )
-            handle.write(
-                "review_enabled={}\n".format(
-                    str(decision["review_contract"]["enabled"]).lower()
-                )
-            )
+            handle.write("engineering_enabled={}\n".format(str(decision["engineering_contract"]["enabled"]).lower()))
+            handle.write("review_enabled={}\n".format(str(decision["review_contract"]["enabled"]).lower()))
     print(f"ARCHITECT_CONTINUATION_OK status={status} actor={decision['next_actor']}")
     return 0
 
