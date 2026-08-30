@@ -1,0 +1,70 @@
+name: QORE reviewer bridge preflight
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/reviewer-bridge-preflight.yml"
+      - "scripts/collect_external_reviewer_state.py"
+      - "scripts/augment_reviewer_control_plane.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Verify bridge secret is configured
+        env:
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$QORE_REVIEWER_DISPATCH_TOKEN"
+          echo "Reviewer bridge secret is configured."
+
+      - name: Verify reviewer repository visibility and permissions
+        env:
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          python3 scripts/collect_external_reviewer_state.py \
+            --output artifacts/external-reviewer-state-base.json
+          python3 scripts/augment_reviewer_control_plane.py \
+            --state artifacts/external-reviewer-state-base.json \
+            --output artifacts/external-reviewer-state.json
+
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          state = json.loads(Path("artifacts/external-reviewer-state.json").read_text())
+          errors = state.get("errors") or []
+          if errors:
+              raise SystemExit("reviewer bridge preflight failed: " + repr(errors))
+
+          summaries = []
+          for name in ("claude", "deepseek"):
+              reviewer = state.get(name)
+              if not isinstance(reviewer, dict):
+                  raise SystemExit(f"{name}: reviewer state unavailable")
+              control = reviewer.get("control_plane")
+              if not isinstance(control, dict) or control.get("visibility") != "AVAILABLE":
+                  raise SystemExit(f"{name}: control-plane visibility unavailable")
+              summaries.append(
+                  f"{name}:prs={len(control.get('open_pull_requests') or [])},"
+                  f"issues={len(control.get('open_issues') or [])},"
+                  f"runs={len(control.get('recent_action_runs') or [])}"
+              )
+
+          print("QORE_REVIEWER_BRIDGE_PREFLIGHT_OK " + " ".join(summaries))
+          PY
