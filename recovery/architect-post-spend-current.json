@@ -1,0 +1,8 @@
+{
+  "schema_version": "qore.architect.post_spend.recovery.request.v1",
+  "failed_architect_run_id": 33338976459,
+  "source_rearm_run_id": 33338967360,
+  "confirmation": "RECOVER_INCOMPLETE_SOL",
+  "reason": "User explicitly authorized continuing until all existing orchestration defects are resolved. Recover the pinned legacy incomplete Sol seed after incomplete-response hardening 044, bounded post-spend recovery 045, and static-gate certification 047 were integrated and post-merge checks passed.",
+  "production_authority": false
+}
