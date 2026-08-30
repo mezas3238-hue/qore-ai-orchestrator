@@ -1,0 +1,358 @@
+name: QORE Architect autonomous V2
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_api_spend:
+        description: Allow bounded GPT-5.6 Sol API calls for this cycle
+        required: true
+        type: boolean
+        default: false
+      codex_worker_mode:
+        description: Behavior when Sol routes executable qore-core engineering to Codex
+        required: true
+        type: choice
+        options:
+          - off
+          - dry_run
+          - execute
+        default: dry_run
+      external_dispatch_mode:
+        description: Behavior when Sol routes to Claude or DeepSeek
+        required: true
+        type: choice
+        options:
+          - off
+          - dry_run
+          - execute
+        default: dry_run
+      sol_reasoning_effort:
+        description: Adaptive Sol reasoning policy or explicit override
+        required: true
+        type: choice
+        options:
+          - auto
+          - medium
+          - high
+          - xhigh
+          - max
+        default: auto
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: qore-architect-autonomous-v2
+  cancel-in-progress: false
+
+jobs:
+  no-spend:
+    if: ${{ inputs.confirm_api_spend != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No model request made. Re-run with confirm_api_spend=true."
+
+  architect-cycle:
+    if: ${{ inputs.confirm_api_spend == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Enforce trusted ref for execute modes
+        if: ${{ inputs.codex_worker_mode == 'execute' || inputs.external_dispatch_mode == 'execute' }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          echo "Execute authority is bound to orchestrator main."
+
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Verify required credentials without exposing values
+        env:
+          OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$OPENAI_SOL_API_KEY"
+          if [[ "${{ inputs.external_dispatch_mode }}" == "execute" ]]; then
+            test -n "$QORE_REVIEWER_DISPATCH_TOKEN"
+          fi
+          echo "Required architect credentials are configured."
+
+      - name: Checkout live qore-core read-only
+        run: |
+          set -euo pipefail
+          git clone --depth 50 https://github.com/mezas3238-hue/qore-core.git workspace/qore-core
+          git -C workspace/qore-core checkout --detach origin/main
+          echo "QORE main: $(git -C workspace/qore-core rev-parse HEAD)"
+
+      - name: Build canonical QORE state snapshot
+        run: |
+          set -euo pipefail
+          python3 scripts/collect_qore_state.py \
+            --repo-dir workspace/qore-core \
+            --output artifacts/qore-state.json
+
+      - name: Collect Claude and DeepSeek control-plane state
+        env:
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/collect_external_reviewer_state.py \
+            --output artifacts/external-reviewer-state-base.json
+          python3 scripts/augment_reviewer_control_plane.py \
+            --state artifacts/external-reviewer-state-base.json \
+            --output artifacts/external-reviewer-state.json
+          python3 scripts/merge_external_reviewer_state.py \
+            --snapshot artifacts/qore-state.json \
+            --reviewers artifacts/external-reviewer-state.json
+
+      - name: Collect Codex worker run and result state
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/collect_codex_worker_state.py \
+            --snapshot artifacts/qore-state.json \
+            --state-output artifacts/codex-worker-state.json
+
+      - name: Validate complete snapshot before model spend
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          state = json.loads(Path("artifacts/qore-state.json").read_text())
+          if state.get("snapshot_consistent") is not True:
+              raise SystemExit("QORE main changed or could not be bound during snapshot")
+          if state.get("collection_errors"):
+              raise SystemExit(f"QORE snapshot is incomplete: {state['collection_errors']}")
+          if not state.get("roadmap_documents") or not state.get("constitution_documents"):
+              raise SystemExit("Canonical roadmap/constitution evidence is missing")
+          protection = state.get("branch_protection") or {}
+          if protection.get("protected") is not True or "quality" not in protection.get("required_status_contexts", []):
+              raise SystemExit("qore-core main protection/quality binding is missing")
+          external = state.get("external_reviewer_state") or {}
+          if external.get("configured") is True and external.get("errors"):
+              raise SystemExit("Reviewer control-plane evidence is incomplete")
+          codex = state.get("codex_worker_state")
+          if not isinstance(codex, dict) or codex.get("schema_version") != "qore.codex.worker.state.v1":
+              raise SystemExit("Codex worker control-plane evidence is incomplete")
+          print("Snapshot, reviewer state, Codex state and protection verified before spend.")
+          PY
+
+      - name: Build bounded model-facing context
+        run: |
+          set -euo pipefail
+          python3 scripts/build_model_context.py \
+            --snapshot artifacts/qore-state.json \
+            --output artifacts/qore-model-context-base.json
+          python3 scripts/augment_engineer_context.py \
+            --context artifacts/qore-model-context-base.json \
+            --output artifacts/qore-model-context-engineer.json
+          python3 scripts/augment_codex_worker_context.py \
+            --context artifacts/qore-model-context-engineer.json \
+            --snapshot artifacts/qore-state.json \
+            --output artifacts/qore-model-context.json
+
+      - name: Select adaptive Sol reasoning effort
+        id: reasoning
+        run: |
+          set -euo pipefail
+          python3 scripts/select_sol_reasoning_v2.py \
+            --snapshot artifacts/qore-state.json \
+            --mode '${{ inputs.sol_reasoning_effort }}' \
+            --output artifacts/sol-reasoning-policy.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Run GPT-5.6 Sol Principal Architect initial pass
+        env:
+          OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
+          SOL_REASONING_EFFORT: ${{ steps.reasoning.outputs.effort }}
+          SOL_MAX_OUTPUT_TOKENS: ${{ steps.reasoning.outputs.max_output_tokens }}
+        run: |
+          set -euo pipefail
+          python3 scripts/run_sol_architect_v2.py \
+            --snapshot artifacts/qore-model-context.json \
+            --charter charters/SOL-PRINCIPAL-ARCHITECT.md \
+            --schema schemas/architect_decision.schema.json \
+            --output artifacts/architect-decision-initial.json \
+            --usage-output artifacts/sol-usage-initial.json
+
+      - name: Evaluate one bounded reasoning escalation
+        id: escalation
+        run: |
+          set -euo pipefail
+          python3 scripts/evaluate_sol_escalation.py \
+            --decision artifacts/architect-decision-initial.json \
+            --current '${{ steps.reasoning.outputs.effort }}' \
+            --output artifacts/sol-escalation.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Promote or execute one escalated Sol pass
+        env:
+          OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ steps.escalation.outputs.escalate }}" == "true" ]]; then
+            SOL_REASONING_EFFORT='${{ steps.escalation.outputs.target_effort }}' \
+            SOL_MAX_OUTPUT_TOKENS='${{ steps.escalation.outputs.max_output_tokens }}' \
+              python3 scripts/run_sol_architect_v2.py \
+                --snapshot artifacts/qore-model-context.json \
+                --charter charters/SOL-PRINCIPAL-ARCHITECT.md \
+                --schema schemas/architect_decision.schema.json \
+                --output artifacts/architect-decision.json \
+                --usage-output artifacts/sol-usage.json
+          else
+            cp artifacts/architect-decision-initial.json artifacts/architect-decision.json
+            cp artifacts/sol-usage-initial.json artifacts/sol-usage.json
+          fi
+
+      - name: Validate preliminary autonomous decision
+        id: preliminary
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_architect_continuation.py \
+            --decision artifacts/architect-decision.json \
+            --snapshot artifacts/qore-state.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Reconstruct and continue one non-terminal Sol step
+        if: ${{ steps.preliminary.outputs.status == 'RECONSTRUCTION_REQUIRED' }}
+        env:
+          OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cp artifacts/architect-decision.json artifacts/architect-decision-before-reconstruction.json
+          python3 scripts/collect_qore_state.py --repo-dir workspace/qore-core --output artifacts/qore-state.json
+          python3 scripts/collect_external_reviewer_state.py --output artifacts/external-reviewer-state-base.json
+          python3 scripts/augment_reviewer_control_plane.py --state artifacts/external-reviewer-state-base.json --output artifacts/external-reviewer-state.json
+          python3 scripts/merge_external_reviewer_state.py --snapshot artifacts/qore-state.json --reviewers artifacts/external-reviewer-state.json
+          python3 scripts/collect_codex_worker_state.py --snapshot artifacts/qore-state.json --state-output artifacts/codex-worker-state.json
+          python3 scripts/build_model_context.py --snapshot artifacts/qore-state.json --output artifacts/qore-model-context-base.json
+          python3 scripts/augment_engineer_context.py --context artifacts/qore-model-context-base.json --output artifacts/qore-model-context-engineer.json
+          python3 scripts/augment_codex_worker_context.py --context artifacts/qore-model-context-engineer.json --snapshot artifacts/qore-state.json --output artifacts/qore-model-context-refresh.json
+          python3 scripts/prepare_sol_continuation_context.py \
+            --context artifacts/qore-model-context-refresh.json \
+            --decision artifacts/architect-decision-before-reconstruction.json \
+            --output artifacts/qore-model-context.json
+          EFFORT=$(python3 -c 'import json; print(json.load(open("artifacts/architect-decision-before-reconstruction.json"))["reasoning_assessment"]["effort_used"])')
+          case "$EFFORT" in medium) LIMIT=5000;; high) LIMIT=7000;; xhigh) LIMIT=9000;; max) LIMIT=12000;; *) exit 2;; esac
+          SOL_REASONING_EFFORT="$EFFORT" SOL_MAX_OUTPUT_TOKENS="$LIMIT" \
+            python3 scripts/run_sol_architect_v2.py \
+              --snapshot artifacts/qore-model-context.json \
+              --charter charters/SOL-PRINCIPAL-ARCHITECT.md \
+              --schema schemas/architect_decision.schema.json \
+              --output artifacts/architect-decision.json \
+              --usage-output artifacts/sol-usage.json
+
+      - name: Validate final autonomous decision
+        id: routing
+        run: |
+          set -euo pipefail
+          python3 scripts/validate_architect_continuation.py \
+            --decision artifacts/architect-decision.json \
+            --snapshot artifacts/qore-state.json \
+            --github-output "$GITHUB_OUTPUT"
+          echo "Sol final status: $(python3 -c 'import json; print(json.load(open("artifacts/architect-decision.json"))["status"])')"
+
+      - name: Enforce reconstruction loop guard
+        if: ${{ steps.routing.outputs.status == 'RECONSTRUCTION_REQUIRED' }}
+        run: |
+          echo "Bounded reconstruction was exhausted; this is a safety stop, not completion." >&2
+          exit 17
+
+      - name: Build exact Codex engineering package
+        if: ${{ inputs.codex_worker_mode != 'off' && steps.routing.outputs.status == 'ENGINEERING_TASK' && steps.routing.outputs.actor == 'CODEX' && steps.routing.outputs.engineering_enabled == 'true' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/build_codex_engineering_request.py \
+            --decision artifacts/architect-decision.json \
+            --orchestrator-run-id '${{ github.run_id }}' \
+            --output artifacts/codex-engineering-request.json
+
+      - name: Dispatch bounded Codex worker
+        if: ${{ inputs.codex_worker_mode != 'off' && steps.routing.outputs.status == 'ENGINEERING_TASK' && steps.routing.outputs.actor == 'CODEX' && steps.routing.outputs.engineering_enabled == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/dispatch_codex_worker.py \
+            --request artifacts/codex-engineering-request.json \
+            --mode '${{ inputs.codex_worker_mode }}' \
+            --output artifacts/codex-dispatch.json
+          if [[ "${{ inputs.codex_worker_mode }}" == "execute" ]]; then
+            python3 - <<'PY'
+          import json
+          result = json.load(open("artifacts/codex-dispatch.json"))
+          run = result.get("run") or {}
+          if run.get("status") not in {"queued", "in_progress"}:
+              raise SystemExit("Codex execute dispatch did not produce an observed queued/in-progress worker")
+          print("Codex is now an observed active worker; architect cycle may stop at this legitimate wait boundary.")
+          PY
+          fi
+
+      - name: Refuse to synthesize an undispatched engineering task in execute operation
+        if: ${{ steps.routing.outputs.status == 'ENGINEERING_TASK' && (inputs.codex_worker_mode == 'off' || inputs.codex_worker_mode == 'dry_run') }}
+        run: |
+          echo "Diagnostic Codex mode cannot satisfy an executable engineering task. Use codex_worker_mode=execute for autonomous operation." >&2
+          if [[ "${{ inputs.codex_worker_mode }}" == "off" ]]; then exit 18; fi
+
+      - name: Build exact Claude or DeepSeek reviewer package
+        if: ${{ inputs.external_dispatch_mode != 'off' && steps.routing.outputs.status == 'REVIEW_TASK' && (steps.routing.outputs.actor == 'CLAUDE_CODE' || steps.routing.outputs.actor == 'DEEPSEEK') && steps.routing.outputs.review_enabled == 'true' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/build_reviewer_package.py \
+            --decision artifacts/architect-decision.json \
+            --snapshot artifacts/qore-state.json \
+            --orchestrator-run-id '${{ github.run_id }}' \
+            --prompt-output artifacts/reviewer-prompt.md \
+            --request-output artifacts/reviewer-request.json \
+            --metadata-output artifacts/reviewer-package.json
+
+      - name: Dispatch to existing reviewer repository
+        if: ${{ inputs.external_dispatch_mode == 'execute' && steps.routing.outputs.status == 'REVIEW_TASK' && (steps.routing.outputs.actor == 'CLAUDE_CODE' || steps.routing.outputs.actor == 'DEEPSEEK') && steps.routing.outputs.review_enabled == 'true' }}
+        env:
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/dispatch_reviewer_request.py \
+            --prompt artifacts/reviewer-prompt.md \
+            --request artifacts/reviewer-request.json \
+            --metadata artifacts/reviewer-package.json \
+            --result-output artifacts/reviewer-dispatch.json
+
+      - name: Refuse to synthesize an undispatched review task in autonomous execute operation
+        if: ${{ steps.routing.outputs.status == 'REVIEW_TASK' && inputs.external_dispatch_mode == 'off' }}
+        run: |
+          echo "Reviewer dispatch is off while Sol has executable review work." >&2
+          exit 19
+
+      - name: Publish bounded run summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "# QORE Architect autonomous V2"
+            for item in sol-reasoning-policy.json sol-escalation.json architect-decision.json codex-worker-state.json codex-engineering-request.json codex-dispatch.json reviewer-package.json reviewer-dispatch.json; do
+              if [[ -f "artifacts/$item" ]]; then
+                echo "## $item"
+                echo '```json'
+                cat "artifacts/$item"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable cycle evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-architect-v2-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
