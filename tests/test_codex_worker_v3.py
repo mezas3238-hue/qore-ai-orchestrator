@@ -151,10 +151,9 @@ class CodexWorkerV3Tests(unittest.TestCase):
         self.assertNotIn("output", trace[0])
         self.assertNotIn("content", trace[0])
 
-    def test_workflow_executes_v3_entrypoint(self) -> None:
+    def test_v3_runtime_remains_available_while_live_workflow_advances(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "codex-engineer-worker.yml").read_text(encoding="utf-8")
-        self.assertIn("Run bounded GPT-5.3-Codex engineering worker V3", workflow)
-        self.assertIn("python3 scripts/run_codex_engineer_worker_v3.py", workflow)
+        self.assertTrue((ROOT / "scripts" / "run_codex_engineer_worker_v3.py").is_file())
         self.assertNotIn("python3 scripts/run_codex_engineer_worker_v2.py", workflow)
 
 
