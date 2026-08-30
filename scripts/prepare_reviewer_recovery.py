@@ -32,6 +32,10 @@ ALLOWED_FILES = {
     "sol-escalation.json",
     "sol-reasoning-policy.json",
 }
+FORBIDDEN_SOURCE_FILES = {
+    "reviewer-package.json",
+    "reviewer-dispatch.json",
+}
 
 
 class RecoveryPrepareError(RuntimeError):
@@ -125,6 +129,8 @@ def extract_allowed(archive_bytes: bytes, output_dir: Path) -> set[str]:
             for info in archive.infolist():
                 path = PurePosixPath(info.filename)
                 basename = path.name
+                if basename in FORBIDDEN_SOURCE_FILES:
+                    raise RecoveryPrepareError("source already contains reviewer package/dispatch evidence")
                 if basename not in ALLOWED_FILES:
                     continue
                 if info.is_dir() or info.file_size > MAX_JSON_BYTES:
