@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -42,6 +46,15 @@ class RearmAutonomyTests(unittest.TestCase):
             "production_authority": False,
         }
 
+    def rearm_request(self, run_id: int = 123) -> dict[str, object]:
+        return {
+            "schema_version": rearm.REARM_REQUEST_SCHEMA,
+            "stopped_resume_run_id": run_id,
+            "confirmation": rearm.REARM_CONFIRMATION,
+            "reason": "User explicitly authorized one new bounded validation tranche.",
+            "production_authority": False,
+        }
+
     def test_all_budget_stop_reasons_are_rearmable(self):
         for reason in sorted(rearm.ALLOWED_STOP_REASONS):
             with self.subTest(reason=reason):
@@ -70,6 +83,60 @@ class RearmAutonomyTests(unittest.TestCase):
         stopped["production_authority"] = True
         with self.assertRaisesRegex(rearm.RearmError, "production boundary"):
             rearm.validate_stopped_receipt(stopped)
+
+    def test_rearm_request_is_exact_and_has_no_production_authority(self):
+        value = self.rearm_request()
+        self.assertEqual(rearm.validate_rearm_request(value)["stopped_resume_run_id"], 123)
+        extra = dict(value, extra="forbidden")
+        with self.assertRaisesRegex(rearm.RearmError, "keys are not exact"):
+            rearm.validate_rearm_request(extra)
+        production = dict(value, production_authority=True)
+        with self.assertRaisesRegex(rearm.RearmError, "production boundary"):
+            rearm.validate_rearm_request(production)
+        bad_confirmation = dict(value, confirmation="YES")
+        with self.assertRaisesRegex(rearm.RearmError, "confirmation"):
+            rearm.validate_rearm_request(bad_confirmation)
+
+    def test_push_activation_requires_exact_one_file_commit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            request_path = Path(temp) / "request.json"
+            request_path.write_text(json.dumps(self.rearm_request()) + "\n", encoding="utf-8")
+            sha = "a" * 40
+            good_commit = {"sha": sha, "files": [{"filename": rearm.REARM_REQUEST_PATH}]}
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": sha},
+                clear=False,
+            ), mock.patch.object(rearm.resume, "api_json", return_value=good_commit):
+                value = rearm.validate_push_activation("token", request_path)
+                self.assertEqual(value["stopped_resume_run_id"], 123)
+
+            bad_commit = {
+                "sha": sha,
+                "files": [
+                    {"filename": rearm.REARM_REQUEST_PATH},
+                    {"filename": "scripts/rearm_autonomy.py"},
+                ],
+            }
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": sha},
+                clear=False,
+            ), mock.patch.object(rearm.resume, "api_json", return_value=bad_commit):
+                with self.assertRaisesRegex(rearm.RearmError, "exactly the rearm request file"):
+                    rearm.validate_push_activation("token", request_path)
+
+    def test_push_activation_rejects_non_main_or_non_push(self):
+        with tempfile.TemporaryDirectory() as temp:
+            request_path = Path(temp) / "request.json"
+            request_path.write_text(json.dumps(self.rearm_request()) + "\n", encoding="utf-8")
+            with mock.patch.dict(
+                os.environ,
+                {"GITHUB_EVENT_NAME": "pull_request", "GITHUB_REF": "refs/heads/main", "GITHUB_SHA": "a" * 40},
+                clear=False,
+            ):
+                with self.assertRaisesRegex(rearm.RearmError, "trusted push"):
+                    rearm.validate_push_activation("token", request_path)
 
     def test_rearm_receipt_preserves_prior_audit_evidence(self):
         stopped = self.stopped()

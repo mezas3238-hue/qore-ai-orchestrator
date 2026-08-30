@@ -19,6 +19,8 @@ RESUME_WORKFLOW_NAME = "QORE agent completion resume"
 RESUME_WORKFLOW = resume.RESUME_WORKFLOW
 REARM_WORKFLOW = "qore-autonomy-rearm.yml"
 REARM_CONFIRMATION = "REARM_BOUNDED_AUTONOMY"
+REARM_REQUEST_SCHEMA = "qore.autonomy.rearm.request.v1"
+REARM_REQUEST_PATH = "recovery/rearm/autonomy-rearm-current.json"
 MAX_REARM_SCAN = 40
 ALLOWED_STOP_REASONS = {
     "AUTO_RESUME_CYCLE_CAP_REACHED",
@@ -88,6 +90,55 @@ def validate_resume_run(run: Any, run_id: int) -> None:
     head_sha = run.get("head_sha")
     if not isinstance(head_sha, str) or resume.SHA_RE.fullmatch(head_sha) is None:
         raise RearmError("source resume run HEAD is invalid")
+
+
+def validate_rearm_request(value: Any) -> dict[str, Any]:
+    allowed = {
+        "schema_version",
+        "stopped_resume_run_id",
+        "confirmation",
+        "reason",
+        "production_authority",
+    }
+    if not isinstance(value, dict) or set(value) != allowed:
+        raise RearmError("rearm request keys are not exact")
+    if value.get("schema_version") != REARM_REQUEST_SCHEMA:
+        raise RearmError("rearm request schema is invalid")
+    run_id = value.get("stopped_resume_run_id")
+    if type(run_id) is not int or run_id <= 0:
+        raise RearmError("rearm request stopped resume run ID is invalid")
+    if value.get("confirmation") != REARM_CONFIRMATION:
+        raise RearmError("rearm request confirmation is invalid")
+    reason = value.get("reason")
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 500:
+        raise RearmError("rearm request reason is invalid")
+    if value.get("production_authority") is not False:
+        raise RearmError("rearm request production boundary is invalid")
+    return value
+
+
+def validate_push_activation(token: str, request_path: Path) -> dict[str, Any]:
+    if os.environ.get("GITHUB_EVENT_NAME") != "push":
+        raise RearmError("request rearm may only originate from a trusted push")
+    if os.environ.get("GITHUB_REF") != "refs/heads/main":
+        raise RearmError("request rearm controller must execute from orchestrator main")
+    sha = os.environ.get("GITHUB_SHA", "")
+    if resume.SHA_RE.fullmatch(sha) is None:
+        raise RearmError("request rearm commit SHA is invalid")
+    commit = resume.api_json(token, ORCH_API, f"/commits/{sha}")
+    if not isinstance(commit, dict) or commit.get("sha") != sha:
+        raise RearmError("request rearm commit identity is invalid")
+    files = commit.get("files")
+    if not isinstance(files, list):
+        raise RearmError("request rearm commit file list is invalid")
+    filenames = [item.get("filename") for item in files if isinstance(item, dict)]
+    if len(files) != 1 or filenames != [REARM_REQUEST_PATH]:
+        raise RearmError("request rearm activation commit must change exactly the rearm request file")
+    try:
+        value = json.loads(request_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RearmError("rearm request file is invalid JSON") from exc
+    return validate_rearm_request(value)
 
 
 def load_stopped_receipt(token: str, run_id: int) -> dict[str, Any]:
@@ -184,24 +235,33 @@ def main() -> int:
     parser.add_argument("--stopped-resume-run-id", type=int, required=True)
     parser.add_argument("--confirmation", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--request")
     args = parser.parse_args()
 
     if args.stopped_resume_run_id <= 0:
         raise RearmError("stopped resume run ID must be positive")
     if args.confirmation != REARM_CONFIRMATION:
         raise RearmError("explicit bounded-autonomy rearm confirmation is missing")
-    if os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
-        raise RearmError("rearm may only originate from an explicit workflow_dispatch")
     if os.environ.get("GITHUB_REF") != "refs/heads/main":
         raise RearmError("rearm controller must execute from orchestrator main")
-    rearm_run_raw = os.environ.get("GITHUB_RUN_ID", "")
-    if not rearm_run_raw.isdigit() or int(rearm_run_raw) <= 0:
-        raise RearmError("rearm workflow run ID is invalid")
-    rearm_run_id = int(rearm_run_raw)
 
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if not token:
         raise RearmError("GITHUB_TOKEN is required")
+
+    if args.request:
+        request = validate_push_activation(token, Path(args.request))
+        if request["stopped_resume_run_id"] != args.stopped_resume_run_id:
+            raise RearmError("rearm request/run-id binding failed")
+        if request["confirmation"] != args.confirmation:
+            raise RearmError("rearm request/confirmation binding failed")
+    elif os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch":
+        raise RearmError("manual rearm may only originate from an explicit workflow_dispatch")
+
+    rearm_run_raw = os.environ.get("GITHUB_RUN_ID", "")
+    if not rearm_run_raw.isdigit() or int(rearm_run_raw) <= 0:
+        raise RearmError("rearm workflow run ID is invalid")
+    rearm_run_id = int(rearm_run_raw)
 
     stopped = load_stopped_receipt(token, args.stopped_resume_run_id)
     prior = previous_rearms(token, args.stopped_resume_run_id)

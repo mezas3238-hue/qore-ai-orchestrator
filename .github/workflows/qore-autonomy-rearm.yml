@@ -1,5 +1,5 @@
 name: QORE autonomy budget rearm
-run-name: Rearm bounded autonomy · stopped resume ${{ inputs.stopped_resume_run_id }}
+run-name: Rearm bounded autonomy · ${{ github.event_name }} · ${{ github.run_id }}
 
 on:
   workflow_dispatch:
@@ -13,6 +13,17 @@ on:
         required: true
         type: boolean
         default: false
+  push:
+    branches:
+      - main
+    paths:
+      - recovery/rearm/autonomy-rearm-current.json
+  pull_request:
+    paths:
+      - .github/workflows/qore-autonomy-rearm.yml
+      - scripts/rearm_autonomy.py
+      - tests/test_rearm_autonomy.py
+      - docs/architecture/AUTONOMY-REARM-REQUEST-017.md
 
 permissions:
   contents: read
@@ -23,7 +34,30 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  rearm:
+  preflight:
+    if: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout rearm candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Validate rearm request contract without dispatch
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/rearm_autonomy.py
+          python3 -m unittest tests.test_rearm_autonomy -v
+          grep -F 'recovery/rearm/autonomy-rearm-current.json' .github/workflows/qore-autonomy-rearm.yml
+          grep -F 'request rearm activation commit must change exactly the rearm request file' scripts/rearm_autonomy.py
+          grep -F 'this exact stopped receipt has already been rearmed' scripts/rearm_autonomy.py
+          grep -F 'production_authority' scripts/rearm_autonomy.py
+
+  manual-rearm:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -61,7 +95,66 @@ jobs:
         run: |
           {
             echo "# QORE bounded autonomy rearm"
+            echo "Event: $GITHUB_EVENT_NAME"
             echo "Stopped resume run: ${{ inputs.stopped_resume_run_id }}"
+            if [[ -f artifacts/qore-autonomy-rearm-receipt.json ]]; then
+              echo '```json'
+              cat artifacts/qore-autonomy-rearm-receipt.json
+              echo '```'
+            else
+              echo "No rearm receipt was produced; the controller failed closed before dispatch."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable rearm receipt
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-autonomy-rearm-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30
+
+  request-rearm:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted orchestrator main
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Validate exact one-file authorization and dispatch one fresh bounded session
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          STOPPED_RESUME_RUN_ID="$(python3 - <<'PY'
+          import json
+          value = json.load(open('recovery/rearm/autonomy-rearm-current.json', encoding='utf-8'))
+          run_id = value.get('stopped_resume_run_id')
+          if type(run_id) is not int or run_id <= 0:
+              raise SystemExit('invalid stopped resume run id')
+          print(run_id)
+          PY
+          )"
+          mkdir -p artifacts
+          python3 scripts/rearm_autonomy.py \
+            --stopped-resume-run-id "$STOPPED_RESUME_RUN_ID" \
+            --confirmation REARM_BOUNDED_AUTONOMY \
+            --request recovery/rearm/autonomy-rearm-current.json \
+            --output artifacts/qore-autonomy-rearm-receipt.json
+
+      - name: Publish request rearm evidence
+        if: ${{ always() }}
+        run: |
+          {
+            echo "# QORE bounded autonomy rearm"
+            echo "Event: $GITHUB_EVENT_NAME"
+            echo "Activation: exact one-file trusted main push"
             if [[ -f artifacts/qore-autonomy-rearm-receipt.json ]]; then
               echo '```json'
               cat artifacts/qore-autonomy-rearm-receipt.json
