@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import build_reviewer_package
+import dispatch_reviewer_request
 import evaluate_sol_escalation
 import run_sol_architect
 import select_sol_reasoning
@@ -155,6 +156,34 @@ class ReviewerRoutingTests(unittest.TestCase):
         }
         self.assertTrue(build_reviewer_package.has_exact_deepseek_expert(snapshot, 22, head))
         self.assertFalse(build_reviewer_package.has_exact_deepseek_expert(snapshot, 22, "c" * 40))
+
+    def test_claude_equivalent_current_request_is_detected(self):
+        prior = {
+            "pr_number": 466,
+            "expected_head": "a" * 40,
+            "expected_synthetic": "b" * 40,
+            "package_id": "OLD",
+        }
+        candidate = dict(prior, package_id="NEW")
+        self.assertTrue(
+            dispatch_reviewer_request.equivalent_request(
+                dispatch_reviewer_request.CLAUDE_REPO, prior, candidate
+            )
+        )
+
+    def test_deepseek_different_stage_is_not_equivalent(self):
+        prior = {
+            "pr_number": 466,
+            "expected_head": "a" * 40,
+            "expected_synthetic": "b" * 40,
+            "review_mode": "expert",
+        }
+        candidate = dict(prior, review_mode="coder")
+        self.assertFalse(
+            dispatch_reviewer_request.equivalent_request(
+                dispatch_reviewer_request.DEEPSEEK_REPO, prior, candidate
+            )
+        )
 
 
 if __name__ == "__main__":
