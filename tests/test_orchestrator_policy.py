@@ -66,6 +66,20 @@ class ReasoningPolicyTests(unittest.TestCase):
 
 
 class EscalationTests(unittest.TestCase):
+    def decision(self, **overrides):
+        base = {
+            "status": "NO_ACTION",
+            "reasoning_assessment": {
+                "effort_used": "xhigh",
+                "escalation_requested": False,
+                "target_effort": "xhigh",
+                "reason": "sufficient",
+            },
+            "risk_gates": [],
+        }
+        base.update(overrides)
+        return base
+
     def test_no_signal_does_not_escalate(self):
         decision = {
             "status": "ENGINEERING_TASK",
@@ -95,6 +109,38 @@ class EscalationTests(unittest.TestCase):
         result = evaluate_sol_escalation.choose_escalation(decision, "high")
         self.assertTrue(result["escalate"])
         self.assertEqual(result["target_effort"], "max")
+
+    def test_closed_production_boundary_does_not_escalate(self):
+        decision = self.decision(
+            risk_gates=[
+                "Production and real-capital authority remain closed.",
+                "No merge, Production, real-capital, credential, or operational authority is granted.",
+            ]
+        )
+        result = evaluate_sol_escalation.choose_escalation(decision, "xhigh")
+        self.assertFalse(result["escalate"])
+        self.assertEqual(result["target_effort"], "xhigh")
+
+    def test_active_credential_leak_escalates_to_max(self):
+        decision = self.decision(
+            risk_gates=["Do not proceed: credential leak detected in reviewer evidence."]
+        )
+        result = evaluate_sol_escalation.choose_escalation(decision, "xhigh")
+        self.assertTrue(result["escalate"])
+        self.assertEqual(result["target_effort"], "max")
+
+    def test_architect_requested_escalation_is_respected(self):
+        decision = self.decision(
+            reasoning_assessment={
+                "effort_used": "high",
+                "escalation_requested": True,
+                "target_effort": "xhigh",
+                "reason": "cross-cutting evidence",
+            }
+        )
+        result = evaluate_sol_escalation.choose_escalation(decision, "high")
+        self.assertTrue(result["escalate"])
+        self.assertEqual(result["target_effort"], "xhigh")
 
 
 class ReviewerRoutingTests(unittest.TestCase):
