@@ -74,18 +74,21 @@ def _compact_issue(value: Any) -> dict[str, Any]:
 def _compact_technical_projection(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         return {}
-    # Keep the exact operational identity and safety contract, not implementation
-    # file inventories or historical authorized-workflow lists. Those remain in
+    # Keep exact operational identity and safety/governance contracts, not full
+    # implementation file inventories or closed-history prose. Those remain in
     # Sol's architect context.
     return {
         key: value[key]
         for key in (
             "bound_main_sha",
             "authoritative_model",
+            "governance_alignment",
             "operational_default",
+            "stable_contract",
+            "alternate_profiles",
+            "governance_resolution",
             "binding_contract",
             "qg_transport_contract",
-            "stable_fallback",
         )
         if key in value
     }

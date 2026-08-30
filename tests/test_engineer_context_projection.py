@@ -61,17 +61,38 @@ class EngineerReviewerProjectionTests(unittest.TestCase):
             ],
             "recent_action_runs": [copy.deepcopy(run) for _ in range(12)],
             "recent_closed_issues": [{"number": 21, "body": huge}],
-            "recent_closed_pull_requests": [{"number": 23, "body": huge}],
+            "recent_closed_pull_requests": [{"number": 25, "body": huge}],
             "technical_projection": {
                 "bound_main_sha": "b" * 40,
                 "authoritative_model": "deepseek-v4-pro",
+                "governance_alignment": True,
                 "operational_default": {
-                    "profile": "compact-budgeted",
-                    "entrypoint": "scripts/deepseek_reviewer_compact_budgeted_v20.py",
+                    "profile": "stable",
+                    "entrypoint": "scripts/deepseek_reviewer_v2_1_1_entrypoint.py",
+                    "manifest_governed": True,
+                },
+                "stable_contract": {
+                    "completion_budget_default": 100000,
+                    "verdict_reserve_default": 12000,
+                    "flash_substitution": False,
+                },
+                "alternate_profiles": {
+                    "compact-budgeted": {
+                        "entrypoint": "scripts/deepseek_reviewer_compact_budgeted_v20.py",
+                        "ordinary_default": False,
+                        "promoted_to_stable": False,
+                    }
+                },
+                "governance_resolution": {
+                    "stable_profile_recertified_and_live": True,
+                    "compact_v20_equivalence_or_stable_promotion": "ABSENT_AND_NOT_REQUIRED_FOR_ORDINARY_ROUTE",
                 },
                 "binding_contract": {"run_name_package_bound": True},
-                "qg_transport_contract": {"transported_qg_evidence_max_chars": 8000},
-                "stable_fallback": {"profile": "stable", "flash_substitution": False},
+                "qg_transport_contract": {
+                    "transported_qg_evidence_max_chars": 8000,
+                    "stable_profile_bound": True,
+                },
+                "stable_manifest": {"blob_sha": "9" * 40, "exact_blob_binding_verified": True},
                 "files": [{"path": "noise", "blob_sha": "1" * 40, "content": huge}],
                 "stable_profile_authorized_workflows": {"files": [huge]},
             },
@@ -106,17 +127,20 @@ class EngineerReviewerProjectionTests(unittest.TestCase):
         encoded = str(projected)
         deepseek = projected["deepseek"]
         control = deepseek["control_plane"]
+        technical = control["technical_projection"]
 
         self.assertEqual(deepseek["current_request"]["pr_number"], 466)
         self.assertEqual(control["main"]["sha"], "b" * 40)
-        self.assertEqual(
-            control["technical_projection"]["authoritative_model"],
-            "deepseek-v4-pro",
-        )
+        self.assertEqual(technical["authoritative_model"], "deepseek-v4-pro")
+        self.assertTrue(technical["governance_alignment"])
+        self.assertEqual(technical["operational_default"]["profile"], "stable")
+        self.assertFalse(technical["alternate_profiles"]["compact-budgeted"]["ordinary_default"])
+        self.assertTrue(technical["qg_transport_contract"]["stable_profile_bound"])
         self.assertEqual(len(control["recent_action_runs"]), subject.MAX_ENGINEER_REVIEWER_RUNS)
         self.assertNotIn("recent_closed_issues", control)
         self.assertNotIn("recent_closed_pull_requests", control)
-        self.assertNotIn("files", control["technical_projection"])
+        self.assertNotIn("files", technical)
+        self.assertNotIn("stable_manifest", technical)
         self.assertNotIn("text", projected["claude"]["review"])
         self.assertNotIn("X" * 1000, encoded)
 
