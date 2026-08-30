@@ -17,6 +17,10 @@ REPO = "mezas3238-hue/qore-core"
 API = f"https://api.github.com/repos/{REPO}"
 USER_AGENT = "qore-ai-orchestrator/1.0"
 MISSION_HEAD_CHARS = 3000
+REVIEW_BODY_CHARS = 16000
+COMMENT_BODY_CHARS = 8000
+MAX_REVIEWS_PER_PR = 12
+MAX_COMMENTS_PER_PR = 12
 
 
 def git(root: Path, *args: str) -> str:
@@ -66,11 +70,44 @@ def read_document_heads(root: Path, pattern: str) -> list[dict[str, str]]:
     return docs
 
 
-def compact_pr(pr: dict[str, Any]) -> dict[str, Any]:
+def compact_review(review: dict[str, Any]) -> dict[str, Any]:
+    user = review.get("user") or {}
+    return {
+        "id": review.get("id"),
+        "user": user.get("login") if isinstance(user, dict) else None,
+        "state": review.get("state"),
+        "commit_id": review.get("commit_id"),
+        "submitted_at": review.get("submitted_at"),
+        "body": (review.get("body") or "")[:REVIEW_BODY_CHARS],
+    }
+
+
+def compact_comment(comment: dict[str, Any]) -> dict[str, Any]:
+    user = comment.get("user") or {}
+    return {
+        "id": comment.get("id"),
+        "user": user.get("login") if isinstance(user, dict) else None,
+        "created_at": comment.get("created_at"),
+        "updated_at": comment.get("updated_at"),
+        "body": (comment.get("body") or "")[:COMMENT_BODY_CHARS],
+    }
+
+
+def compact_pr(pr: dict[str, Any], errors: list[str]) -> dict[str, Any]:
     base = pr.get("base") or {}
     head = pr.get("head") or {}
+    number = pr.get("number")
+    reviews: list[dict[str, Any]] = []
+    comments: list[dict[str, Any]] = []
+    if type(number) is int and number > 0:
+        reviews_raw = api_json(f"/pulls/{number}/reviews", {"per_page": "100"}, errors)
+        comments_raw = api_json(f"/issues/{number}/comments", {"per_page": "100"}, errors)
+        if isinstance(reviews_raw, list):
+            reviews = [compact_review(x) for x in reviews_raw if isinstance(x, dict)][-MAX_REVIEWS_PER_PR:]
+        if isinstance(comments_raw, list):
+            comments = [compact_comment(x) for x in comments_raw if isinstance(x, dict)][-MAX_COMMENTS_PER_PR:]
     return {
-        "number": pr.get("number"),
+        "number": number,
         "title": pr.get("title"),
         "state": pr.get("state"),
         "draft": pr.get("draft"),
@@ -82,6 +119,8 @@ def compact_pr(pr: dict[str, Any]) -> dict[str, Any]:
         "head_sha": head.get("sha") if isinstance(head, dict) else None,
         "synthetic_sha": pr.get("merge_commit_sha"),
         "body": (pr.get("body") or "")[:4000],
+        "reviews": reviews,
+        "conversation_comments": comments,
     }
 
 
@@ -149,7 +188,7 @@ def main() -> int:
     if not snapshot_consistent:
         errors.append("main_sha_changed_or_unverifiable_during_snapshot")
 
-    pulls = [compact_pr(x) for x in pulls_raw] if isinstance(pulls_raw, list) else []
+    pulls = [compact_pr(x, errors) for x in pulls_raw] if isinstance(pulls_raw, list) else []
     issues = (
         [
             compact_issue(x)
@@ -168,7 +207,9 @@ def main() -> int:
             runs.append(
                 {
                     "id": run.get("id"),
+                    "workflow_id": run.get("workflow_id"),
                     "name": run.get("name"),
+                    "path": run.get("path"),
                     "event": run.get("event"),
                     "status": run.get("status"),
                     "conclusion": run.get("conclusion"),

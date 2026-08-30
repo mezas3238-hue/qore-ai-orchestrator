@@ -8,6 +8,17 @@
       "type": "string",
       "enum": ["NO_ACTION", "ENGINEERING_TASK", "REVIEW_TASK", "HUMAN_DECISION_REQUIRED", "RECONSTRUCTION_REQUIRED"]
     },
+    "reasoning_assessment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "effort_used": {"type": "string", "enum": ["medium", "high", "xhigh", "max"]},
+        "escalation_requested": {"type": "boolean"},
+        "target_effort": {"type": "string", "enum": ["medium", "high", "xhigh", "max"]},
+        "reason": {"type": "string"}
+      },
+      "required": ["effort_used", "escalation_requested", "target_effort", "reason"]
+    },
     "roadmap_anchor": {
       "type": "object",
       "additionalProperties": false,
@@ -37,6 +48,28 @@
       },
       "required": ["enabled", "contract_id", "objective", "scope", "acceptance", "required_tests", "forbidden"]
     },
+    "review_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "contract_id": {"type": "string"},
+        "pr_number": {"type": "integer", "minimum": 0},
+        "review_kind": {
+          "type": "string",
+          "enum": ["NONE", "CLAUDE_TECHNICAL", "DEEPSEEK_EXPERT", "DEEPSEEK_CODER"]
+        },
+        "objective": {"type": "string"},
+        "scope": {"type": "array", "items": {"type": "string"}},
+        "adversarial_foci": {"type": "array", "items": {"type": "string"}},
+        "acceptance": {"type": "array", "items": {"type": "string"}},
+        "forbidden": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": [
+        "enabled", "contract_id", "pr_number", "review_kind", "objective", "scope",
+        "adversarial_foci", "acceptance", "forbidden"
+      ]
+    },
     "evidence": {
       "type": "array",
       "items": {
@@ -54,8 +87,8 @@
     "production_authority": {"type": "boolean", "const": false}
   },
   "required": [
-    "schema_version", "source_main_sha", "status", "roadmap_anchor", "decision",
-    "next_actor", "engineering_contract", "evidence", "evidence_requests",
+    "schema_version", "source_main_sha", "status", "reasoning_assessment", "roadmap_anchor", "decision",
+    "next_actor", "engineering_contract", "review_contract", "evidence", "evidence_requests",
     "risk_gates", "production_authority"
   ]
 }

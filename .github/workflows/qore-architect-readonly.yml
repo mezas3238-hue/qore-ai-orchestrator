@@ -13,15 +13,26 @@ on:
         required: true
         type: boolean
         default: false
-      sol_reasoning_effort:
-        description: Sol reasoning effort for this architect cycle
+      external_dispatch_mode:
+        description: Behavior when Sol routes to existing Claude/DeepSeek reviewer repos
         required: true
         type: choice
         options:
+          - off
+          - dry_run
+          - execute
+        default: dry_run
+      sol_reasoning_effort:
+        description: Adaptive Sol reasoning policy or explicit override
+        required: true
+        type: choice
+        options:
+          - auto
           - medium
           - high
           - xhigh
-        default: high
+          - max
+        default: auto
 
 permissions:
   contents: read
@@ -40,14 +51,14 @@ jobs:
   architect-cycle:
     if: ${{ inputs.confirm_api_spend == true }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout orchestrator infrastructure
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
 
-      - name: Verify OpenAI secrets without exposing values
+      - name: Verify required OpenAI credentials without exposing values
         env:
           OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
           OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
@@ -58,6 +69,13 @@ jobs:
             test -n "$OPENAI_CODEX_API_KEY"
           fi
           echo "Required OpenAI credentials are configured."
+
+      - name: Enforce trusted ref for external execute mode
+        if: ${{ inputs.external_dispatch_mode == 'execute' }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          echo "External reviewer execute mode is bound to orchestrator main."
 
       - name: Checkout live qore-core read-only
         run: |
@@ -97,10 +115,53 @@ jobs:
           print("Snapshot completeness and protection binding verified before spend.")
           PY
 
-      - name: Run GPT-5.6 Sol Principal Architect
+      - name: Select adaptive Sol reasoning effort
+        id: reasoning
+        run: |
+          set -euo pipefail
+          python3 scripts/select_sol_reasoning.py \
+            --snapshot artifacts/qore-state.json \
+            --mode '${{ inputs.sol_reasoning_effort }}' \
+            --output artifacts/sol-reasoning-policy.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Run GPT-5.6 Sol Principal Architect initial pass
         env:
           OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
-          SOL_REASONING_EFFORT: ${{ inputs.sol_reasoning_effort }}
+          SOL_REASONING_EFFORT: ${{ steps.reasoning.outputs.effort }}
+          SOL_MAX_OUTPUT_TOKENS: ${{ steps.reasoning.outputs.max_output_tokens }}
+        run: |
+          set -euo pipefail
+          python3 scripts/run_sol_architect.py \
+            --snapshot artifacts/qore-state.json \
+            --charter charters/SOL-PRINCIPAL-ARCHITECT.md \
+            --schema schemas/architect_decision.schema.json \
+            --output artifacts/architect-decision-initial.json \
+            --usage-output artifacts/sol-usage-initial.json
+
+      - name: Evaluate one bounded reasoning escalation
+        id: escalation
+        run: |
+          set -euo pipefail
+          python3 scripts/evaluate_sol_escalation.py \
+            --decision artifacts/architect-decision-initial.json \
+            --current '${{ steps.reasoning.outputs.effort }}' \
+            --output artifacts/sol-escalation.json \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Promote initial Sol decision when no escalation is required
+        if: ${{ steps.escalation.outputs.escalate != 'true' }}
+        run: |
+          set -euo pipefail
+          cp artifacts/architect-decision-initial.json artifacts/architect-decision.json
+          cp artifacts/sol-usage-initial.json artifacts/sol-usage.json
+
+      - name: Run one escalated Sol verification pass
+        if: ${{ steps.escalation.outputs.escalate == 'true' }}
+        env:
+          OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
+          SOL_REASONING_EFFORT: ${{ steps.escalation.outputs.target_effort }}
+          SOL_MAX_OUTPUT_TOKENS: ${{ steps.escalation.outputs.max_output_tokens }}
         run: |
           set -euo pipefail
           python3 scripts/run_sol_architect.py \
@@ -110,18 +171,21 @@ jobs:
             --output artifacts/architect-decision.json \
             --usage-output artifacts/sol-usage.json
 
-      - name: Evaluate Sol routing
+      - name: Evaluate final Sol routing
         id: routing
         run: |
           set -euo pipefail
-          ACTOR="$(python3 -c 'import json; print(json.load(open("artifacts/architect-decision.json"))["next_actor"])')"
-          ENABLED="$(python3 -c 'import json; print(str(json.load(open("artifacts/architect-decision.json"))["engineering_contract"]["enabled"]).lower())')"
-          echo "actor=${ACTOR}" >> "$GITHUB_OUTPUT"
-          echo "contract_enabled=${ENABLED}" >> "$GITHUB_OUTPUT"
-          echo "Sol routed next action to: ${ACTOR}"
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          decision = json.load(open("artifacts/architect-decision.json"))
+          print(f"actor={decision['next_actor']}")
+          print(f"engineering_enabled={str(decision['engineering_contract']['enabled']).lower()}")
+          print(f"review_enabled={str(decision['review_contract']['enabled']).lower()}")
+          PY
+          echo "Sol routed next action to: $(python3 -c 'import json; print(json.load(open("artifacts/architect-decision.json"))["next_actor"])')"
 
       - name: Run Codex Principal Engineer plan
-        if: ${{ inputs.enable_codex_plan == true && steps.routing.outputs.actor == 'CODEX' && steps.routing.outputs.contract_enabled == 'true' }}
+        if: ${{ inputs.enable_codex_plan == true && steps.routing.outputs.actor == 'CODEX' && steps.routing.outputs.engineering_enabled == 'true' }}
         env:
           OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
         run: |
@@ -134,24 +198,79 @@ jobs:
             --output artifacts/codex-plan.json \
             --usage-output artifacts/codex-usage.json
 
+      - name: Build exact Claude or DeepSeek reviewer package
+        if: ${{ inputs.external_dispatch_mode != 'off' && (steps.routing.outputs.actor == 'CLAUDE_CODE' || steps.routing.outputs.actor == 'DEEPSEEK') && steps.routing.outputs.review_enabled == 'true' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/build_reviewer_package.py \
+            --decision artifacts/architect-decision.json \
+            --snapshot artifacts/qore-state.json \
+            --orchestrator-run-id '${{ github.run_id }}' \
+            --prompt-output artifacts/reviewer-prompt.md \
+            --request-output artifacts/reviewer-request.json \
+            --metadata-output artifacts/reviewer-package.json
+
+      - name: Dispatch to existing reviewer repository
+        if: ${{ inputs.external_dispatch_mode == 'execute' && github.ref == 'refs/heads/main' && (steps.routing.outputs.actor == 'CLAUDE_CODE' || steps.routing.outputs.actor == 'DEEPSEEK') && steps.routing.outputs.review_enabled == 'true' }}
+        env:
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$QORE_REVIEWER_DISPATCH_TOKEN"
+          python3 scripts/dispatch_reviewer_request.py \
+            --prompt artifacts/reviewer-prompt.md \
+            --request artifacts/reviewer-request.json \
+            --metadata artifacts/reviewer-package.json \
+            --result-output artifacts/reviewer-dispatch.json
+
       - name: Publish bounded run summary
         if: ${{ always() }}
         run: |
           {
-            echo "# QORE Architect read-only cycle"
+            echo "# QORE Architect cycle"
             echo
+            if [[ -f artifacts/sol-reasoning-policy.json ]]; then
+              echo "## Adaptive reasoning policy"
+              echo '```json'
+              cat artifacts/sol-reasoning-policy.json
+              echo '```'
+            fi
+            if [[ -f artifacts/sol-escalation.json ]]; then
+              echo "## Escalation gate"
+              echo '```json'
+              cat artifacts/sol-escalation.json
+              echo '```'
+            fi
             if [[ -f artifacts/architect-decision.json ]]; then
+              echo "## Final Sol decision"
               echo '```json'
               cat artifacts/architect-decision.json
+              echo '```'
+            elif [[ -f artifacts/architect-decision-initial.json ]]; then
+              echo "## Initial Sol decision"
+              echo '```json'
+              cat artifacts/architect-decision-initial.json
               echo '```'
             else
               echo "Architect decision was not produced."
             fi
             if [[ -f artifacts/codex-plan.json ]]; then
-              echo
               echo "## Codex plan"
               echo '```json'
               cat artifacts/codex-plan.json
+              echo '```'
+            fi
+            if [[ -f artifacts/reviewer-package.json ]]; then
+              echo "## External reviewer package"
+              echo '```json'
+              cat artifacts/reviewer-package.json
+              echo '```'
+              echo "External dispatch mode: ${{ inputs.external_dispatch_mode }}"
+            fi
+            if [[ -f artifacts/reviewer-dispatch.json ]]; then
+              echo "## Reviewer dispatch"
+              echo '```json'
+              cat artifacts/reviewer-dispatch.json
               echo '```'
             fi
           } >> "$GITHUB_STEP_SUMMARY"

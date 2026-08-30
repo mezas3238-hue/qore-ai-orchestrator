@@ -15,6 +15,8 @@ from typing import Any
 
 ENDPOINT = "https://api.openai.com/v1/responses"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+EFFORTS = ("medium", "high", "xhigh", "max")
+EFFORT_RANK = {name: index for index, name in enumerate(EFFORTS)}
 
 
 def output_text(payload: dict[str, Any]) -> str:
@@ -28,20 +30,74 @@ def output_text(payload: dict[str, Any]) -> str:
     return "".join(chunks).strip()
 
 
-def validate_decision(decision: dict[str, Any], main_sha: str) -> None:
+def _disabled_review_contract(contract: dict[str, Any]) -> bool:
+    return (
+        contract.get("enabled") is False
+        and contract.get("review_kind") == "NONE"
+        and contract.get("pr_number") == 0
+        and contract.get("scope") == []
+        and contract.get("adversarial_foci") == []
+        and contract.get("acceptance") == []
+        and contract.get("forbidden") == []
+    )
+
+
+def validate_decision(decision: dict[str, Any], main_sha: str, effort: str) -> None:
     if decision.get("schema_version") != "qore.architect.decision.v1":
         raise ValueError("unexpected architect schema version")
     if decision.get("source_main_sha") != main_sha:
         raise ValueError("architect decision is not bound to snapshot main SHA")
     if decision.get("production_authority") is not False:
         raise ValueError("production authority must remain false")
-    contract = decision.get("engineering_contract")
-    if not isinstance(contract, dict):
+
+    assessment = decision.get("reasoning_assessment")
+    if not isinstance(assessment, dict):
+        raise ValueError("reasoning_assessment missing")
+    if assessment.get("effort_used") != effort:
+        raise ValueError("reasoning assessment does not match controller-selected effort")
+    target = assessment.get("target_effort")
+    if target not in EFFORT_RANK:
+        raise ValueError("invalid reasoning escalation target")
+    escalation = assessment.get("escalation_requested")
+    if type(escalation) is not bool:
+        raise ValueError("escalation_requested must be a boolean")
+    if escalation:
+        if EFFORT_RANK[target] <= EFFORT_RANK[effort]:
+            raise ValueError("reasoning escalation target must be strictly higher")
+    elif target != effort:
+        raise ValueError("non-escalating decision must keep target_effort equal to effort_used")
+
+    engineering = decision.get("engineering_contract")
+    review = decision.get("review_contract")
+    if not isinstance(engineering, dict):
         raise ValueError("engineering_contract missing")
-    if decision.get("next_actor") == "CODEX" and contract.get("enabled") is not True:
-        raise ValueError("CODEX routing requires an enabled engineering contract")
-    if decision.get("next_actor") != "CODEX" and contract.get("enabled") is True:
-        raise ValueError("engineering contract may be enabled only when next_actor is CODEX in rollout v1")
+    if not isinstance(review, dict):
+        raise ValueError("review_contract missing")
+
+    actor = decision.get("next_actor")
+    status = decision.get("status")
+
+    if actor == "CODEX":
+        if status != "ENGINEERING_TASK" or engineering.get("enabled") is not True:
+            raise ValueError("CODEX routing requires ENGINEERING_TASK and enabled engineering contract")
+        if not _disabled_review_contract(review):
+            raise ValueError("CODEX routing cannot also enable an external review contract")
+    elif engineering.get("enabled") is True:
+        raise ValueError("engineering contract may be enabled only when next_actor is CODEX")
+
+    if actor in {"CLAUDE_CODE", "DEEPSEEK"}:
+        if status != "REVIEW_TASK" or review.get("enabled") is not True:
+            raise ValueError("external reviewer routing requires REVIEW_TASK and enabled review contract")
+        if type(review.get("pr_number")) is not int or review["pr_number"] <= 0:
+            raise ValueError("external reviewer routing requires a positive PR number")
+        if actor == "CLAUDE_CODE" and review.get("review_kind") != "CLAUDE_TECHNICAL":
+            raise ValueError("CLAUDE_CODE routing requires CLAUDE_TECHNICAL review kind")
+        if actor == "DEEPSEEK" and review.get("review_kind") not in {"DEEPSEEK_EXPERT", "DEEPSEEK_CODER"}:
+            raise ValueError("DEEPSEEK routing requires an Expert or Coder review kind")
+        if engineering.get("enabled") is True:
+            raise ValueError("external reviewer routing cannot also enable engineering")
+    elif not _disabled_review_contract(review):
+        raise ValueError("review contract must be disabled when next_actor is not an external reviewer")
 
 
 def main() -> int:
@@ -67,14 +123,24 @@ def main() -> int:
     charter = Path(args.charter).read_text(encoding="utf-8")
     schema = json.loads(Path(args.schema).read_text(encoding="utf-8"))
     effort = os.environ.get("SOL_REASONING_EFFORT", "high")
-    if effort not in {"medium", "high", "xhigh", "max"}:
+    if effort not in EFFORT_RANK:
         print("Invalid SOL_REASONING_EFFORT.", file=sys.stderr)
+        return 2
+    try:
+        max_output_tokens = int(os.environ.get("SOL_MAX_OUTPUT_TOKENS", "7000"))
+    except ValueError:
+        print("Invalid SOL_MAX_OUTPUT_TOKENS.", file=sys.stderr)
+        return 2
+    if max_output_tokens < 1000 or max_output_tokens > 20000:
+        print("SOL_MAX_OUTPUT_TOKENS outside bounded range.", file=sys.stderr)
         return 2
 
     body = {
         "model": "gpt-5.6-sol",
         "instructions": charter,
         "input": (
+            f"The deterministic controller selected reasoning effort `{effort}` for this pass. "
+            "Report that exact value in reasoning_assessment.effort_used. If the supplied evidence makes a higher tier materially necessary, request exactly one escalation according to the charter; otherwise keep target_effort equal to effort_used.\n\n"
             "This is the canonical read-only QORE state snapshot for this architect cycle. "
             "Reconstruct state from it, read the roadmap and constitution, and choose exactly one safe next action.\n\n"
             + json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False)
@@ -89,9 +155,13 @@ def main() -> int:
                 "schema": schema,
             },
         },
-        "max_output_tokens": 5000,
+        "max_output_tokens": max_output_tokens,
         "store": False,
-        "metadata": {"qore_role": "principal_architect", "qore_main_sha": main_sha},
+        "metadata": {
+            "qore_role": "principal_architect",
+            "qore_main_sha": main_sha,
+            "qore_reasoning_effort": effort,
+        },
     }
 
     request = urllib.request.Request(
@@ -101,7 +171,7 @@ def main() -> int:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=300) as response:
+        with urllib.request.urlopen(request, timeout=420) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         print(f"OpenAI Sol request failed with HTTP {exc.code}.", file=sys.stderr)
@@ -117,7 +187,7 @@ def main() -> int:
     rendered = output_text(payload)
     try:
         decision = json.loads(rendered)
-        validate_decision(decision, main_sha)
+        validate_decision(decision, main_sha, effort)
     except (json.JSONDecodeError, ValueError) as exc:
         print(f"Architect decision failed closed: {exc}", file=sys.stderr)
         return 6
@@ -134,6 +204,8 @@ def main() -> int:
     safe_usage = {
         "response_id": payload.get("id"),
         "model": payload.get("model"),
+        "reasoning_effort": effort,
+        "max_output_tokens": max_output_tokens,
         "input_tokens": usage.get("input_tokens"),
         "cached_tokens": input_details.get("cached_tokens"),
         "cache_write_tokens": input_details.get("cache_write_tokens"),
@@ -142,7 +214,11 @@ def main() -> int:
         "total_tokens": usage.get("total_tokens"),
     }
     Path(args.usage_output).write_text(json.dumps(safe_usage, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"SOL_ARCHITECT_OK main={main_sha} status={decision['status']} next_actor={decision['next_actor']}")
+    print(
+        "SOL_ARCHITECT_OK main={} effort={} status={} next_actor={}".format(
+            main_sha, effort, decision["status"], decision["next_actor"]
+        )
+    )
     return 0
 
 
