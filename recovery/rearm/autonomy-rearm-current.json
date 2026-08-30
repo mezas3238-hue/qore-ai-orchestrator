@@ -1,7 +1,7 @@
 {
   "schema_version": "qore.autonomy.rearm.request.v1",
-  "stopped_resume_run_id": 33337949925,
+  "stopped_resume_run_id": 33338701499,
   "confirmation": "REARM_BOUNDED_AUTONOMY",
-  "reason": "User explicitly authorized continuing until all existing autonomous orchestration defects are resolved. Start exactly one new bounded validation tranche after Codex worker V3 cache-stable stateless replay and contract-allowlisted historical reference_diff were integrated on orchestrator main and post-merge static checks passed.",
+  "reason": "User explicitly authorized continuing until all existing autonomous orchestration defects are resolved. Start exactly one new bounded validation tranche after Codex worker V4 deterministic cumulative historical-reference materialization was integrated on orchestrator main and post-merge static checks passed.",
   "production_authority": false
 }
