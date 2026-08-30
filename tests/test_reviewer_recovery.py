@@ -210,13 +210,16 @@ class ReviewerRecoveryTests(unittest.TestCase):
         ):
             self.assertTrue(dispatch.semantic_publication_exists(466, package, head, "token"))
 
-    def test_workflows_pin_no_model_recovery_and_path_isolation(self) -> None:
+    def test_workflows_pin_no_model_recovery_path_isolation_and_qg_auth(self) -> None:
         root = Path(__file__).resolve().parents[1]
         trigger_workflow = (root / ".github/workflows/qore-reviewer-recovery-trigger.yml").read_text(
             encoding="utf-8"
         )
         recovery_workflow = (
             root / ".github/workflows/qore-architect-review-recovery-v1.yml"
+        ).read_text(encoding="utf-8")
+        ordinary_workflow = (
+            root / ".github/workflows/qore-architect-autonomous-v2.yml"
         ).read_text(encoding="utf-8")
 
         self.assertIn("actions: write", trigger_workflow)
@@ -231,6 +234,11 @@ class ReviewerRecoveryTests(unittest.TestCase):
         )
         self.assertIn("qore-architect-v2-${{ github.run_id }}", recovery_workflow)
         self.assertNotIn("OPENAI_SOL_API_KEY", recovery_workflow)
+        self.assertIn(
+            "QORE_CORE_READ_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}",
+            ordinary_workflow,
+        )
+        self.assertIn('test -n "$QORE_CORE_READ_TOKEN"', ordinary_workflow)
 
 
 if __name__ == "__main__":
