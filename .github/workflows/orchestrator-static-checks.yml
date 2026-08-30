@@ -1,0 +1,69 @@
+name: Orchestrator static checks
+
+on:
+  pull_request:
+    paths:
+      - "charters/**"
+      - "schemas/**"
+      - "scripts/**"
+      - ".github/workflows/**"
+      - "docs/**"
+  push:
+    branches:
+      - main
+    paths:
+      - "charters/**"
+      - "schemas/**"
+      - "scripts/**"
+      - ".github/workflows/**"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Compile Python runners
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/openai_sol_connection_test.py \
+            scripts/openai_codex_connection_test.py \
+            scripts/collect_qore_state.py \
+            scripts/run_sol_architect.py \
+            scripts/run_codex_engineer_plan.py
+
+      - name: Parse strict JSON schemas
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          for path in sorted(Path("schemas").glob("*.json")):
+              schema = json.loads(path.read_text(encoding="utf-8"))
+              if schema.get("type") != "object":
+                  raise SystemExit(f"{path}: top-level schema must be object")
+              if schema.get("additionalProperties") is not False:
+                  raise SystemExit(f"{path}: additionalProperties must be false")
+              print(f"schema ok: {path}")
+          PY
+
+      - name: Verify permanent role boundaries
+        run: |
+          set -euo pipefail
+          grep -F "sole source of truth" charters/SOL-PRINCIPAL-ARCHITECT.md
+          grep -F "You are the Principal Engineer" charters/CODEX-PRINCIPAL-ENGINEER.md
+          grep -F "PLAN-ONLY" charters/CODEX-PRINCIPAL-ENGINEER.md
+          grep -F "No decision from this architect grants Production authority" charters/SOL-PRINCIPAL-ARCHITECT.md
+          grep -F "permissions:" .github/workflows/qore-architect-readonly.yml
+          grep -F "contents: read" .github/workflows/qore-architect-readonly.yml
