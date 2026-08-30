@@ -112,7 +112,11 @@ def _model_input(snapshot: dict[str, Any], effort: str) -> Any:
         + json.dumps(dynamic, separators=(",", ":"), ensure_ascii=False)
     )
     return [{"role": "user", "content": [
-        {"type": "input_text", "text": stable_text},
+        {
+            "type": "input_text",
+            "text": stable_text,
+            "prompt_cache_breakpoint": {"mode": "explicit"},
+        },
         {"type": "input_text", "text": dynamic_text},
     ]}]
 
@@ -164,7 +168,7 @@ def main() -> int:
         "max_output_tokens": max_output_tokens,
         "store": False,
         "prompt_cache_key": PROMPT_CACHE_KEY,
-        "prompt_cache_options": {"mode": "implicit", "ttl": "30m"},
+        "prompt_cache_options": {"mode": "explicit", "ttl": "30m"},
         "metadata": {"qore_role": "principal_architect", "qore_main_sha": main_sha, "qore_reasoning_effort": effort},
     }
     request = urllib.request.Request(ENDPOINT, data=json.dumps(body).encode("utf-8"), headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"}, method="POST")
@@ -202,6 +206,7 @@ def main() -> int:
         "cached_tokens": input_details.get("cached_tokens"), "cache_write_tokens": input_details.get("cache_write_tokens"),
         "output_tokens": usage.get("output_tokens"), "reasoning_tokens": output_details.get("reasoning_tokens"),
         "total_tokens": usage.get("total_tokens"), "prompt_cache_key": PROMPT_CACHE_KEY,
+        "prompt_cache_mode": "explicit",
         "model_context_chars": metrics.get("architect_context_chars"), "full_snapshot_chars": metrics.get("full_snapshot_chars"),
     }
     Path(args.usage_output).write_text(json.dumps(safe_usage, indent=2, sort_keys=True) + "\n", encoding="utf-8")
