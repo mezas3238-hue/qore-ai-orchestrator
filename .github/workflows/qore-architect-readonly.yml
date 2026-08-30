@@ -73,6 +73,30 @@ jobs:
             --repo-dir workspace/qore-core \
             --output artifacts/qore-state.json
 
+      - name: Validate snapshot before any model spend
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          state = json.loads(Path("artifacts/qore-state.json").read_text())
+          if state.get("snapshot_consistent") is not True:
+              raise SystemExit("QORE main changed or could not be bound during snapshot")
+          if state.get("collection_errors"):
+              raise SystemExit(f"QORE snapshot is incomplete: {state['collection_errors']}")
+          if not state.get("roadmap_documents"):
+              raise SystemExit("No canonical roadmap documents found")
+          if not state.get("constitution_documents"):
+              raise SystemExit("No QORE Constitution documents found")
+          protection = state.get("branch_protection") or {}
+          if protection.get("protected") is not True:
+              raise SystemExit("qore-core main is not observed as protected")
+          if "quality" not in protection.get("required_status_contexts", []):
+              raise SystemExit("required qore-core quality context was not observed")
+          print("Snapshot completeness and protection binding verified before spend.")
+          PY
+
       - name: Run GPT-5.6 Sol Principal Architect
         env:
           OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
