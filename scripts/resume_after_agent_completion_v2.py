@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Run the agent-completion resume gate with exact reviewer workflow/recovery lineage binding."""
+"""Run the agent-completion resume gate with exact reviewer and recovery lineage binding."""
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
+import zipfile
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -18,9 +20,38 @@ REVIEWER_WORKFLOW_PATHS = {
     "mezas3238-hue/qore-deepseek-reviewer": ".github/workflows/deepseek-qore-review.yml",
 }
 ARCHITECT_WORKFLOW_PATH = ".github/workflows/qore-architect-autonomous-v2.yml"
+CODEX_WORKFLOW_PATH = ".github/workflows/codex-engineer-worker.yml"
 RECOVERY_WORKFLOW_PATH = ".github/workflows/qore-architect-review-recovery-v1.yml"
 RECOVERY_SOURCE_SCHEMA = "qore.reviewer.dispatch.recovery.source.v1"
+PRE_SPEND_RECOVERY_SCHEMA = "qore.architect.pre_spend.recovery.request.v1"
+PRE_SPEND_RECOVERY_PATH = "recovery/architect-pre-spend-current.json"
+MAX_PRE_SPEND_RECOVERIES = 1
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+PRE_SPEND_SKIPPED_STEPS = (
+    "Build bounded model-facing context",
+    "Select adaptive Sol reasoning effort",
+    "Run GPT-5.6 Sol Principal Architect initial pass",
+    "Evaluate one bounded reasoning escalation",
+    "Promote or execute one escalated Sol pass",
+    "Validate preliminary autonomous decision",
+    "Reconstruct and continue one non-terminal Sol step",
+    "Validate final autonomous decision",
+    "Enforce reconstruction loop guard",
+    "Build exact Codex engineering package",
+    "Dispatch bounded Codex worker",
+    "Refuse to synthesize an undispatched engineering task in execute operation",
+    "Build exact Claude or DeepSeek reviewer package",
+    "Dispatch to existing reviewer repository",
+    "Refuse to synthesize an undispatched review task in autonomous execute operation",
+)
+FORBIDDEN_PRE_SPEND_ARTIFACTS = (
+    "sol-usage",
+    "architect-decision",
+    "codex-engineering-request",
+    "codex-dispatch",
+    "reviewer-package",
+    "reviewer-dispatch",
+)
 
 
 def parse_reviewer_event(event: dict[str, Any], reviewer_token: str) -> dict[str, Any]:
@@ -104,13 +135,7 @@ def resolve_reviewer_parent(
     token: str,
     package_parent_run_id: int,
 ) -> tuple[int, bytes, bytes]:
-    """Return canonical lineage parent, package archive, and cost archive.
-
-    A normal reviewer package is owned directly by an Autonomous V2 run. A package
-    emitted by the bounded reviewer-recovery workflow is owned by that recovery run,
-    but its budget/session lineage must remain anchored to the original Autonomous V2
-    run proven by reviewer-recovery-source.json and the original artifact digest.
-    """
+    """Return canonical lineage parent, package archive, and cost archive."""
     run = base.api_json(token, base.ORCH_API, f"/actions/runs/{package_parent_run_id}")
     if not isinstance(run, dict):
         raise base.ResumeError("reviewer package parent run payload is invalid")
@@ -165,6 +190,261 @@ def resolve_reviewer_parent(
     return source_run_id, recovery_archive, source_archive
 
 
+def _workflow_run_payload(event: dict[str, Any]) -> dict[str, Any]:
+    run = event.get("workflow_run")
+    if not isinstance(run, dict):
+        raise base.ResumeError("workflow_run event payload is missing")
+    return run
+
+
+def _run_steps(token: str, run_id: int) -> dict[str, str | None]:
+    payload = base.api_json(
+        token,
+        base.ORCH_API,
+        f"/actions/runs/{run_id}/jobs?filter=latest&per_page=100",
+    )
+    if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
+        raise base.ResumeError("architect job evidence is invalid")
+    jobs = [job for job in payload["jobs"] if isinstance(job, dict) and job.get("name") == "architect-cycle"]
+    if len(jobs) != 1 or jobs[0].get("conclusion") != "failure":
+        raise base.ResumeError("pre-spend recovery requires one failed architect-cycle job")
+    steps = jobs[0].get("steps")
+    if not isinstance(steps, list):
+        raise base.ResumeError("architect-cycle step evidence is unavailable")
+    result: dict[str, str | None] = {}
+    for step in steps:
+        if isinstance(step, dict) and isinstance(step.get("name"), str):
+            result[step["name"]] = step.get("conclusion")
+    return result
+
+
+def _artifact_names(archive: bytes) -> set[str]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+            return {Path(name).name for name in bundle.namelist() if not name.endswith("/")}
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise base.ResumeError("architect pre-spend artifact is not a valid ZIP") from exc
+
+
+def _validate_pre_spend_failure(
+    token: str,
+    run_id: int,
+    run_attempt: int,
+    expected_head_sha: str | None,
+) -> dict[str, Any]:
+    run = base.api_json(token, base.ORCH_API, f"/actions/runs/{run_id}")
+    if not isinstance(run, dict):
+        raise base.ResumeError("failed architect run payload is invalid")
+    if (
+        run.get("id") != run_id
+        or run.get("name") != "QORE Architect autonomous V2"
+        or run.get("path") != ARCHITECT_WORKFLOW_PATH
+        or run.get("event") != "workflow_dispatch"
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "failure"
+        or run.get("head_branch") != "main"
+        or run.get("run_attempt", 1) != run_attempt
+    ):
+        raise base.ResumeError("architect pre-spend recovery source binding failed")
+    head_sha = run.get("head_sha")
+    if not isinstance(head_sha, str) or base.SHA_RE.fullmatch(head_sha) is None:
+        raise base.ResumeError("failed architect HEAD is invalid")
+    if expected_head_sha is not None and head_sha != expected_head_sha:
+        raise base.ResumeError("failed architect HEAD does not match recovery request")
+
+    steps = _run_steps(token, run_id)
+    if steps.get("Validate complete snapshot before model spend") != "failure":
+        raise base.ResumeError("architect did not fail at the pre-spend snapshot gate")
+    for name in PRE_SPEND_SKIPPED_STEPS:
+        if steps.get(name) != "skipped":
+            raise base.ResumeError(f"pre-spend recovery refused: step was not skipped: {name}")
+
+    archive = base.artifact_bytes(token, base.ORCH_REPO, run_id, f"qore-architect-v2-{run_id}")
+    names = _artifact_names(archive)
+    contaminated = sorted(
+        name
+        for name in names
+        if any(name.startswith(prefix) for prefix in FORBIDDEN_PRE_SPEND_ARTIFACTS)
+    )
+    if contaminated:
+        raise base.ResumeError(f"pre-spend recovery artifact contains spend/side-effect evidence: {contaminated}")
+    return run
+
+
+def _pre_spend_noop(run_id: int, run_attempt: int, reason: str) -> dict[str, Any]:
+    return {
+        "schema_version": "qore.orchestration.resume.receipt.v1",
+        "event_key": f"CONTROLLER_PRE_SPEND:{run_id}:{run_attempt}",
+        "actor": "CONTROLLER",
+        "repository": base.ORCH_REPO,
+        "source_run_id": run_id,
+        "source_run_attempt": run_attempt,
+        "source_conclusion": "failure",
+        "dispatched": False,
+        "child_architect_run_id": None,
+        "stop_reason": reason,
+        "production_authority": False,
+    }
+
+
+def _copy_lineage_receipt(prior: dict[str, Any], failed_run_id: int, failed_attempt: int) -> dict[str, Any]:
+    count = prior.get("pre_spend_recovery_count", 0)
+    if type(count) is not int or count < 0:
+        raise base.ResumeError("prior pre-spend recovery count is invalid")
+    if count >= MAX_PRE_SPEND_RECOVERIES:
+        return {
+            **_pre_spend_noop(failed_run_id, failed_attempt, "PRE_SPEND_RECOVERY_CAP_REACHED"),
+            "session_id": prior.get("session_id"),
+            "cycle_index": prior.get("cycle_index"),
+            "estimated_spend_usd": prior.get("estimated_spend_usd"),
+            "sol_calls_used": prior.get("sol_calls_used"),
+            "codex_jobs_used": prior.get("codex_jobs_used"),
+            "package_history": prior.get("package_history", []),
+            "pre_spend_recovery_count": count,
+        }
+    required = (
+        "session_id",
+        "cycle_index",
+        "estimated_spend_usd",
+        "sol_calls_used",
+        "codex_jobs_used",
+        "package_history",
+        "max_auto_resumes",
+        "max_estimated_spend_usd",
+        "max_sol_calls",
+        "max_codex_jobs",
+    )
+    if any(key not in prior for key in required):
+        raise base.ResumeError("prior receipt lacks bounded-lineage fields")
+    history = prior.get("package_history")
+    if not isinstance(history, list) or not all(isinstance(item, str) for item in history):
+        raise base.ResumeError("prior package history is invalid")
+    return {
+        "schema_version": "qore.orchestration.resume.receipt.v1",
+        "event_key": f"CONTROLLER_PRE_SPEND:{failed_run_id}:{failed_attempt}",
+        "actor": "CONTROLLER",
+        "repository": base.ORCH_REPO,
+        "source_run_id": failed_run_id,
+        "source_run_attempt": failed_attempt,
+        "source_conclusion": "failure",
+        "package_id": prior.get("package_id"),
+        "parent_architect_run_id": prior.get("parent_architect_run_id"),
+        "session_id": prior["session_id"],
+        "cycle_index": prior["cycle_index"],
+        "max_auto_resumes": prior["max_auto_resumes"],
+        "estimated_spend_usd": prior["estimated_spend_usd"],
+        "max_estimated_spend_usd": prior["max_estimated_spend_usd"],
+        "architect_cost_usd": "0",
+        "architect_cost_notes": ["pre_spend_controller_recovery_no_model_call"],
+        "agent_cost_usd": "0",
+        "agent_cost_kind": "controller_recovery_no_provider_call",
+        "sol_calls_used": prior["sol_calls_used"],
+        "max_sol_calls": prior["max_sol_calls"],
+        "sol_calls_reserved_per_architect_run": prior.get(
+            "sol_calls_reserved_per_architect_run", base.MAX_SOL_CALLS_PER_ARCHITECT_RUN
+        ),
+        "codex_jobs_used": prior["codex_jobs_used"],
+        "max_codex_jobs": prior["max_codex_jobs"],
+        "package_history": list(history),
+        "pre_spend_recovery_count": count + 1,
+        "recovery_of_child_architect_run_id": failed_run_id,
+        "verified_no_model_or_agent_side_effect": True,
+        "dispatched": False,
+        "child_architect_run_id": None,
+        "stop_reason": None,
+        "production_authority": False,
+    }
+
+
+def _load_push_recovery_request(event: dict[str, Any], token: str) -> tuple[int, int, str, int]:
+    if event.get("ref") != "refs/heads/main":
+        raise base.ResumeError("pre-spend recovery push is not on main")
+    after = event.get("after")
+    if not isinstance(after, str) or base.SHA_RE.fullmatch(after) is None:
+        raise base.ResumeError("pre-spend recovery push SHA is invalid")
+    live_sha = os.environ.get("GITHUB_SHA", "")
+    if live_sha != after:
+        raise base.ResumeError("pre-spend recovery checkout/push SHA mismatch")
+    commit = base.api_json(token, base.ORCH_API, f"/commits/{after}")
+    files = commit.get("files") if isinstance(commit, dict) else None
+    if not isinstance(files, list):
+        raise base.ResumeError("pre-spend recovery commit file list is invalid")
+    changed = {item.get("filename") for item in files if isinstance(item, dict)}
+    if changed != {PRE_SPEND_RECOVERY_PATH}:
+        raise base.ResumeError("pre-spend recovery activation commit changed unexpected files")
+    request = json.loads(Path(PRE_SPEND_RECOVERY_PATH).read_text(encoding="utf-8"))
+    allowed = {
+        "schema_version",
+        "failed_child_run_id",
+        "failed_child_run_attempt",
+        "expected_failed_head_sha",
+        "source_resume_run_id",
+        "reason",
+    }
+    if not isinstance(request, dict) or set(request) != allowed:
+        raise base.ResumeError("pre-spend recovery request keys are not exact")
+    if request.get("schema_version") != PRE_SPEND_RECOVERY_SCHEMA:
+        raise base.ResumeError("pre-spend recovery request schema is invalid")
+    run_id = request.get("failed_child_run_id")
+    attempt = request.get("failed_child_run_attempt")
+    head = request.get("expected_failed_head_sha")
+    source_resume_run_id = request.get("source_resume_run_id")
+    reason = request.get("reason")
+    if type(run_id) is not int or run_id <= 0 or type(attempt) is not int or attempt <= 0:
+        raise base.ResumeError("pre-spend recovery run identity is invalid")
+    if not isinstance(head, str) or base.SHA_RE.fullmatch(head) is None:
+        raise base.ResumeError("pre-spend recovery expected HEAD is invalid")
+    if type(source_resume_run_id) is not int or source_resume_run_id <= 0:
+        raise base.ResumeError("pre-spend recovery source resume run ID is invalid")
+    if not isinstance(reason, str) or not reason.strip():
+        raise base.ResumeError("pre-spend recovery reason is empty")
+    return run_id, attempt, head, source_resume_run_id
+
+
+def _handle_pre_spend_recovery(
+    token: str,
+    receipts: list[dict[str, Any]],
+    run_id: int,
+    attempt: int,
+    expected_head: str | None,
+    *,
+    source_resume_run_id: int | None = None,
+) -> dict[str, Any]:
+    prior = base.lineage_for_parent(receipts, run_id)
+    if prior is None:
+        if source_resume_run_id is not None:
+            raise base.ResumeError("requested pre-spend recovery child is not bound by a prior resume receipt")
+        return _pre_spend_noop(run_id, attempt, "ARCHITECT_NOT_RESUME_CHILD")
+    if source_resume_run_id is not None:
+        source_receipt = base._receipt_for_run(token, source_resume_run_id)
+        if not isinstance(source_receipt, dict):
+            raise base.ResumeError("requested source resume receipt is unavailable")
+        for key in ("event_key", "child_architect_run_id", "session_id", "cycle_index"):
+            if source_receipt.get(key) != prior.get(key):
+                raise base.ResumeError("requested source resume receipt does not match live lineage")
+    _validate_pre_spend_failure(token, run_id, attempt, expected_head)
+    receipt = _copy_lineage_receipt(prior, run_id, attempt)
+    if receipt.get("stop_reason") is None:
+        child_run_id = base.dispatch_architect(token)
+        receipt["dispatched"] = True
+        receipt["child_architect_run_id"] = child_run_id
+    return receipt
+
+
+def _preserve_pre_spend_count(receipt: dict[str, Any], receipts: list[dict[str, Any]], parent_run_id: int) -> None:
+    prior = base.lineage_for_parent(receipts, parent_run_id)
+    count = 0 if prior is None else prior.get("pre_spend_recovery_count", 0)
+    if type(count) is not int or count < 0:
+        raise base.ResumeError("pre-spend recovery count in lineage is invalid")
+    receipt["pre_spend_recovery_count"] = count
+
+
+def _write_receipt(path: str, receipt: dict[str, Any]) -> None:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--event", required=True)
@@ -195,8 +475,56 @@ def main() -> int:
     if not isinstance(event, dict):
         raise base.ResumeError("GitHub event payload is not an object")
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+    receipts = base.recent_receipts(token)
+
+    if event_name == "push":
+        run_id, attempt, expected_head, source_resume_run_id = _load_push_recovery_request(event, token)
+        receipt = _handle_pre_spend_recovery(
+            token,
+            receipts,
+            run_id,
+            attempt,
+            expected_head,
+            source_resume_run_id=source_resume_run_id,
+        )
+        _write_receipt(args.output, receipt)
+        print(
+            f"PRE_SPEND_RECOVERY_OK source={run_id} dispatched={receipt.get('dispatched')} "
+            f"child={receipt.get('child_architect_run_id')} stop={receipt.get('stop_reason')}"
+        )
+        return 0
 
     if event_name == "workflow_run":
+        workflow_run = _workflow_run_payload(event)
+        if workflow_run.get("path") == ARCHITECT_WORKFLOW_PATH:
+            run_id = workflow_run.get("id")
+            attempt = workflow_run.get("run_attempt", 1)
+            if type(run_id) is not int or type(attempt) is not int or attempt <= 0:
+                raise base.ResumeError("architect workflow_run identity is invalid")
+            if workflow_run.get("conclusion") != "failure":
+                receipt = _pre_spend_noop(run_id, attempt, "ARCHITECT_COMPLETION_NOT_FAILED")
+            else:
+                prior = base.lineage_for_parent(receipts, run_id)
+                if prior is None:
+                    receipt = _pre_spend_noop(run_id, attempt, "ARCHITECT_NOT_RESUME_CHILD")
+                else:
+                    try:
+                        receipt = _handle_pre_spend_recovery(
+                            token, receipts, run_id, attempt, workflow_run.get("head_sha")
+                        )
+                    except base.ResumeError as exc:
+                        receipt = {
+                            **_pre_spend_noop(run_id, attempt, "ARCHITECT_FAILURE_NOT_PRE_SPEND_RECOVERABLE"),
+                            "evidence_error": str(exc),
+                            "session_id": prior.get("session_id"),
+                            "cycle_index": prior.get("cycle_index"),
+                        }
+            _write_receipt(args.output, receipt)
+            print(
+                f"ARCHITECT_COMPLETION_GATE_OK source={run_id} dispatched={receipt.get('dispatched')} "
+                f"stop={receipt.get('stop_reason')}"
+            )
+            return 0
         completion = base.parse_codex_event(event, token)
         package_archive = base.architect_archive(token, completion["parent_architect_run_id"])
         cost_archive = package_archive
@@ -209,15 +537,14 @@ def main() -> int:
         canonical_parent, package_archive, cost_archive = resolve_reviewer_parent(token, package_parent)
         completion["parent_architect_run_id"] = canonical_parent
     elif event_name == "workflow_dispatch" and args.mode == "dry_run":
-        output = {
+        receipt = {
             "schema_version": "qore.orchestration.resume.receipt.v1",
             "event_key": f"DIAGNOSTIC:{os.environ.get('GITHUB_RUN_ID', 'unknown')}",
             "dispatched": False,
             "stop_reason": "MANUAL_DRY_RUN_NO_AGENT_COMPLETION",
             "production_authority": False,
         }
-        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.output).write_text(json.dumps(output, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        _write_receipt(args.output, receipt)
         print("AGENT_RESUME_DIAGNOSTIC_OK")
         return 0
     else:
@@ -225,7 +552,6 @@ def main() -> int:
 
     base.parent_package_binding(package_archive, completion)
     sol_cost, sol_notes, sol_calls = base.architect_cost(cost_archive)
-    receipts = base.recent_receipts(token)
     receipt = base.build_receipt(
         completion,
         receipts,
@@ -238,13 +564,12 @@ def main() -> int:
         max_sol_calls=args.max_sol_calls,
         max_codex_jobs=args.max_codex_jobs,
     )
+    _preserve_pre_spend_count(receipt, receipts, completion["parent_architect_run_id"])
     if receipt.get("stop_reason") is None:
         child_run_id = base.dispatch_architect(token)
         receipt["dispatched"] = True
         receipt["child_architect_run_id"] = child_run_id
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_receipt(args.output, receipt)
     print(
         "AGENT_RESUME_OK actor={} package={} dispatched={} session={} cycle={} spend={} sol_calls={} codex_jobs={} stop={}".format(
             receipt.get("actor"),
