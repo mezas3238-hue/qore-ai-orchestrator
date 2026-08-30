@@ -1,0 +1,36 @@
+name: OpenAI Codex connection test
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_api_spend:
+        description: Explicitly allow one minimal OpenAI API request
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  connection-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@v4
+
+      - name: No-spend guard
+        if: ${{ !inputs.confirm_api_spend }}
+        run: |
+          echo "No API request executed. Re-run manually with confirm_api_spend=true to perform the bounded connection test."
+
+      - name: Run one bounded Codex API request
+        if: ${{ inputs.confirm_api_spend }}
+        env:
+          OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
+          OPENAI_CODEX_MODEL: gpt-5.3-codex
+        run: |
+          set -euo pipefail
+          python3 scripts/openai_codex_connection_test.py
