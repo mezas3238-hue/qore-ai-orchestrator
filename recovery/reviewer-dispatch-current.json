@@ -1,0 +1,6 @@
+{
+  "schema_version": "qore.reviewer.dispatch.recovery.request.v1",
+  "source_architect_run_id": 33330339041,
+  "expected_source_head_sha": "6ee9292198fe392b5aca33e551a0377145f908e2",
+  "reason": "Recover the exact REVIEW_TASK from Autonomous V2 run 33330339041 after qore-core QG log read failed with HTTP 403 before reviewer package generation."
+}
