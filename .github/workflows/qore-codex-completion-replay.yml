@@ -37,7 +37,7 @@ jobs:
           grep -F '"actor": "CODEX"' .github/workflows/codex-engineer-worker.yml
           grep -F 'qore_agent_completion_v1' .github/workflows/codex-engineer-worker.yml
           grep -F "parse_codex_repository_event" scripts/resume_after_agent_completion_v2.py
-          python3 -m unittest tests.test_codex_repository_completion -v
+          python3 -m unittest discover -s tests -p 'test_codex_repository_completion.py' -v
 
       - name: Validate replay request when present
         run: |
@@ -133,8 +133,6 @@ jobs:
               output.write(f"package={package}\n")
           PY
 
-          RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${{ steps.replay.outputs.run_id }}" 2>/dev/null || true)"
-          # The step outputs are not visible until the step completes, so bind live evidence below from the request directly.
           RUN_ID="$(jq -r '.source_run_id' recovery/codex-completion-current.json)"
           ATTEMPT="$(jq -r '.source_run_attempt' recovery/codex-completion-current.json)"
           HEAD_SHA="$(jq -r '.source_head_sha' recovery/codex-completion-current.json)"
