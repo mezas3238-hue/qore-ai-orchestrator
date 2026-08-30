@@ -1,7 +1,7 @@
 {
   "schema_version": "qore.autonomy.rearm.request.v1",
-  "stopped_resume_run_id": 33336526081,
+  "stopped_resume_run_id": 33337949925,
   "confirmation": "REARM_BOUNDED_AUTONOMY",
-  "reason": "Retry the explicitly authorized bounded validation tranche after rearm run 33337355669 failed closed before any dispatch because the resume source used a dynamic run-name; stable workflow-path binding is now integrated and green.",
+  "reason": "User explicitly authorized continuing until all existing autonomous orchestration defects are resolved. Start exactly one new bounded validation tranche after Codex worker V3 cache-stable stateless replay and contract-allowlisted historical reference_diff were integrated on orchestrator main and post-merge static checks passed.",
   "production_authority": false
 }
