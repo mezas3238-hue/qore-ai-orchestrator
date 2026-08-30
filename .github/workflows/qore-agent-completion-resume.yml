@@ -75,7 +75,7 @@ jobs:
             WORKFLOW_PATH="$(jq -r '.workflow_run.path // ""' "$GITHUB_EVENT_PATH")"
           fi
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            RECOVERY_MODE="$(python3 scripts/select_architect_recovery_mode.py --event "$GITHUB_EVENT_PATH")"
+            RECOVERY_MODE="$(python3 scripts/select_architect_recovery_mode.py --sha "$GITHUB_SHA")"
             case "$RECOVERY_MODE" in
               post_spend)
                 python3 scripts/recover_post_spend_architect.py \
