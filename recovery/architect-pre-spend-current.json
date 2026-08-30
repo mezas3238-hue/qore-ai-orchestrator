@@ -1,0 +1,8 @@
+{
+  "schema_version": "qore.architect.pre_spend.recovery.request.v1",
+  "failed_child_run_id": 33334577973,
+  "failed_child_run_attempt": 1,
+  "expected_failed_head_sha": "3bd895b9c70ea95cf4d068ed861a855fc9281e0b",
+  "source_resume_run_id": 33334572266,
+  "reason": "Recover the exact Autonomous V2 child that failed at the pre-spend reviewer control-plane snapshot gate after R95 completion; the source run has no Sol, Codex, or reviewer side-effect artifacts."
+}
