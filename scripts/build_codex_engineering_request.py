@@ -14,8 +14,9 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ALLOWED_TARGETS = {"mezas3238-hue/qore-core"}
 
 
-def package_id(source: str, contract_id: str) -> str:
-    digest = hashlib.sha256(contract_id.encode("utf-8")).hexdigest()[:16]
+def package_id(source: str, contract: dict[str, Any]) -> str:
+    canonical = json.dumps(contract, separators=(",", ":"), sort_keys=True, ensure_ascii=False)
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
     return f"QORE-CODEX-{source[:12]}-{digest}"
 
 
@@ -40,7 +41,7 @@ def build(decision: dict[str, Any], orchestrator_run_id: str) -> dict[str, Any]:
         raise ValueError("architect decision attempted Production authority")
     return {
         "schema_version": "qore.codex.engineering.request.v1",
-        "package_id": package_id(source, contract_id),
+        "package_id": package_id(source, contract),
         "source_main_sha": source,
         "architect_run_id": str(orchestrator_run_id),
         "engineering_contract": contract,
