@@ -57,11 +57,10 @@ def main() -> int:
         with urllib.request.urlopen(request, timeout=45) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        print(f"OpenAI HTTP error {exc.code}: {detail[:1000]}", file=sys.stderr)
+        print(f"OpenAI API request failed with HTTP {exc.code}.", file=sys.stderr)
         return 3
-    except Exception as exc:  # connection probe should fail closed with concise evidence
-        print(f"OpenAI connection error: {type(exc).__name__}: {exc}", file=sys.stderr)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        print(f"OpenAI connection probe failed: {type(exc).__name__}", file=sys.stderr)
         return 4
 
     output_text = extract_output_text(payload)
