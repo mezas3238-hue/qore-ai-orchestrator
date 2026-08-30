@@ -1,0 +1,50 @@
+name: QORE reviewer dispatch recovery trigger
+
+on:
+  workflow_run:
+    workflows:
+      - QORE Architect autonomous V2
+    types:
+      - completed
+  push:
+    branches:
+      - main
+    paths:
+      - recovery/reviewer-dispatch-current.json
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: qore-reviewer-dispatch-recovery-trigger
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    if: ${{ github.event_name == 'push' || (github.event.workflow_run.path == '.github/workflows/qore-architect-autonomous-v2.yml' && github.event.workflow_run.conclusion == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout orchestrator recovery controller
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Dispatch one bounded reviewer recovery when eligible
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/trigger_reviewer_recovery.py \
+            --event "$GITHUB_EVENT_PATH" \
+            --request recovery/reviewer-dispatch-current.json \
+            --output artifacts/reviewer-recovery-trigger.json
+
+      - name: Upload immutable recovery trigger receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-reviewer-recovery-trigger-${{ github.run_id }}
+          path: artifacts/reviewer-recovery-trigger.json
+          if-no-files-found: error
+          retention-days: 30

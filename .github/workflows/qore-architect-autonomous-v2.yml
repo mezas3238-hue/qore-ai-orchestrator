@@ -305,8 +305,11 @@ jobs:
 
       - name: Build exact Claude or DeepSeek reviewer package
         if: ${{ inputs.external_dispatch_mode != 'off' && steps.routing.outputs.status == 'REVIEW_TASK' && (steps.routing.outputs.actor == 'CLAUDE_CODE' || steps.routing.outputs.actor == 'DEEPSEEK') && steps.routing.outputs.review_enabled == 'true' }}
+        env:
+          QORE_CORE_READ_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
         run: |
           set -euo pipefail
+          test -n "$QORE_CORE_READ_TOKEN"
           python3 scripts/build_reviewer_package.py \
             --decision artifacts/architect-decision.json \
             --snapshot artifacts/qore-state.json \
