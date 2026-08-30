@@ -32,6 +32,9 @@ PROMPT_CACHE_KEY = "qore-codex-engineer-worker-v4"
 REFERENCE_MATERIALIZATION_POLICY = "explicit-objective-single-allowlisted-descendant-v1"
 MATERIALIZATION_MARKERS = (
     "cumulative replacement candidate",
+    "materialize exact",
+    "materialise exact",
+    "corrected descendant of",
     "checking out exact",
     "check out exact",
     "checkout exact",
