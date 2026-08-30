@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Retry-aware wrapper for bounded reviewer recovery dispatch.
 
-The canonical trigger remains the source/evidence validator. This wrapper only
-replaces its dispatch gate so one additional attempt is allowed after a prior
-recovery failed before producing reviewer package/dispatch evidence.
+The canonical trigger remains the source/evidence validator. At most three
+recovery attempts are permitted for one source architect run. The third slot
+exists only to migrate the run-4 recovery from failed job-log transport to
+frozen structured QG evidence; every previous attempt must be terminal,
+non-successful, and free of reviewer package/dispatch side effects.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from typing import Any
 
 import trigger_reviewer_recovery as trigger
 
-MAX_RECOVERY_ATTEMPTS = 2
+MAX_RECOVERY_ATTEMPTS = 3
 RETRYABLE_TERMINAL_CONCLUSIONS = {
     "failure",
     "cancelled",
@@ -75,7 +77,7 @@ def retry_eligible(token: str, source_run_id: int) -> tuple[bool, list[dict[str,
 
 
 def dispatch_recovery_retry_aware(token: str, source_run_id: int, expected_head: str) -> int | None:
-    eligible, existing = retry_eligible(token, source_run_id)
+    eligible, _existing = retry_eligible(token, source_run_id)
     if not eligible:
         return None
 
