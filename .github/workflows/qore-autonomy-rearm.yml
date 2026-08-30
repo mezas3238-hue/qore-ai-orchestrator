@@ -17,7 +17,13 @@ on:
     branches:
       - main
     paths:
-      - recovery/autonomy-rearm-current.json
+      - rearm/autonomy-rearm-current.json
+  pull_request:
+    paths:
+      - .github/workflows/qore-autonomy-rearm.yml
+      - scripts/rearm_autonomy.py
+      - tests/test_rearm_autonomy.py
+      - docs/architecture/AUTONOMY-REARM-REQUEST-017.md
 
 permissions:
   contents: read
@@ -28,6 +34,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    if: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout rearm candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Validate rearm request contract without dispatch
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/rearm_autonomy.py
+          python3 -m unittest tests.test_rearm_autonomy -v
+          grep -F 'rearm/autonomy-rearm-current.json' .github/workflows/qore-autonomy-rearm.yml
+          grep -F 'request rearm activation commit must change exactly the rearm request file' scripts/rearm_autonomy.py
+          grep -F 'this exact stopped receipt has already been rearmed' scripts/rearm_autonomy.py
+          grep -F 'production_authority' scripts/rearm_autonomy.py
+
   manual-rearm:
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
@@ -106,7 +134,7 @@ jobs:
           test "$GITHUB_REF" = "refs/heads/main"
           STOPPED_RESUME_RUN_ID="$(python3 - <<'PY'
           import json
-          value = json.load(open('recovery/autonomy-rearm-current.json', encoding='utf-8'))
+          value = json.load(open('rearm/autonomy-rearm-current.json', encoding='utf-8'))
           run_id = value.get('stopped_resume_run_id')
           if type(run_id) is not int or run_id <= 0:
               raise SystemExit('invalid stopped resume run id')
@@ -117,7 +145,7 @@ jobs:
           python3 scripts/rearm_autonomy.py \
             --stopped-resume-run-id "$STOPPED_RESUME_RUN_ID" \
             --confirmation REARM_BOUNDED_AUTONOMY \
-            --request recovery/autonomy-rearm-current.json \
+            --request rearm/autonomy-rearm-current.json \
             --output artifacts/qore-autonomy-rearm-receipt.json
 
       - name: Publish request rearm evidence
