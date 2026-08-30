@@ -17,6 +17,7 @@ ORCH_REPO = resume.ORCH_REPO
 ORCH_API = resume.ORCH_API
 RESUME_WORKFLOW_NAME = "QORE agent completion resume"
 RESUME_WORKFLOW = resume.RESUME_WORKFLOW
+RESUME_WORKFLOW_PATH = ".github/workflows/qore-agent-completion-resume.yml"
 REARM_WORKFLOW = "qore-autonomy-rearm.yml"
 REARM_CONFIRMATION = "REARM_BOUNDED_AUTONOMY"
 REARM_REQUEST_SCHEMA = "qore.autonomy.rearm.request.v1"
@@ -79,12 +80,12 @@ def validate_stopped_receipt(receipt: Any) -> dict[str, Any]:
 def validate_resume_run(run: Any, run_id: int) -> None:
     if not isinstance(run, dict) or run.get("id") != run_id:
         raise RearmError("stopped resume workflow run identity is invalid")
-    if run.get("name") != RESUME_WORKFLOW_NAME:
+    if run.get("path") != RESUME_WORKFLOW_PATH:
         raise RearmError("source run is not the QORE completion resume gate")
     if run.get("event") not in {"workflow_run", "repository_dispatch"}:
         raise RearmError("source resume run was not caused by an agent completion")
-    if run.get("status") != "completed":
-        raise RearmError("source resume run is not completed")
+    if run.get("status") != "completed" or run.get("conclusion") != "success":
+        raise RearmError("source resume run is not completed success")
     if run.get("head_branch") != "main":
         raise RearmError("source resume run did not execute from orchestrator main")
     head_sha = run.get("head_sha")
