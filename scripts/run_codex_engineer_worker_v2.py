@@ -28,6 +28,13 @@ MAX_PATCH_CHARS = 120_000
 MAX_TOOL_OUTPUT_CHARS = 24_000
 MAX_CHANGED_FILES = 30
 MAX_READ_LINES = 1200
+MAX_FULL_TOOL_OUTPUTS = 2
+BUDGET_WEIGHT_DENOMINATOR = 20
+BUDGET_WEIGHT_UNCACHED_INPUT = 20
+BUDGET_WEIGHT_CACHED_INPUT = 2
+BUDGET_WEIGHT_CACHE_WRITE = 25
+BUDGET_WEIGHT_OUTPUT = 160
+BUDGET_FORMULA_VERSION = "codex-input-equivalent-v1"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 QUALITY_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("ruff", "check", "."),
@@ -308,13 +315,20 @@ def validate_request(request: dict[str, Any], repo: Path) -> tuple[str, dict[str
 
 
 def dispatch_tool(tools: LocalTools, name: str, args: dict[str, Any]) -> dict[str, Any]:
-    if name == "list_files": return tools.list_files(str(args["prefix"]), int(args["limit"]))
-    if name == "read_file": return tools.read_file(str(args["path"]), int(args["start_line"]), int(args["end_line"]))
-    if name == "search_text": return tools.search_text(str(args["query"]), str(args["prefix"]), int(args["max_results"]))
-    if name == "apply_patch": return tools.apply_patch(str(args["patch"]))
-    if name == "git_diff": return tools.git_diff(int(args["max_chars"]))
-    if name == "run_targeted_pytest": return tools.run_targeted_pytest(str(args["path"]))
-    if name == "run_quality_gate": return tools.run_quality_gate()
+    if name == "list_files":
+        return tools.list_files(str(args["prefix"]), int(args["limit"]))
+    if name == "read_file":
+        return tools.read_file(str(args["path"]), int(args["start_line"]), int(args["end_line"]))
+    if name == "search_text":
+        return tools.search_text(str(args["query"]), str(args["prefix"]), int(args["max_results"]))
+    if name == "apply_patch":
+        return tools.apply_patch(str(args["patch"]))
+    if name == "git_diff":
+        return tools.git_diff(int(args["max_chars"]))
+    if name == "run_targeted_pytest":
+        return tools.run_targeted_pytest(str(args["path"]))
+    if name == "run_quality_gate":
+        return tools.run_quality_gate()
     raise WorkerError(f"unsupported tool: {name}")
 
 
@@ -332,6 +346,75 @@ def add_usage(total: dict[str, int], payload: dict[str, Any]) -> None:
     ):
         if type(value) is int:
             total[key] = total.get(key, 0) + value
+
+
+def spend_equivalent_tokens(usage: dict[str, int]) -> int:
+    """Convert raw API usage into GPT-5.3-Codex input-price-equivalent units.
+
+    Ratios are fixed from the controller pricing contract: cached input costs
+    0.1x normal input, cache-write reserve costs 1.25x, and output costs 8x.
+    Raw token totals remain separately preserved in the usage artifact.
+    """
+    input_tokens = usage.get("input_tokens", 0)
+    cached_tokens = usage.get("cached_tokens", 0)
+    cache_write_tokens = usage.get("cache_write_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    values = (input_tokens, cached_tokens, cache_write_tokens, output_tokens)
+    if any(type(value) is not int or value < 0 for value in values):
+        raise WorkerError("Codex usage counters must be non-negative integers")
+    if cached_tokens + cache_write_tokens > input_tokens:
+        raise WorkerError("Codex cached/cache-write usage exceeds total input tokens")
+    uncached_tokens = input_tokens - cached_tokens - cache_write_tokens
+    numerator = (
+        uncached_tokens * BUDGET_WEIGHT_UNCACHED_INPUT
+        + cached_tokens * BUDGET_WEIGHT_CACHED_INPUT
+        + cache_write_tokens * BUDGET_WEIGHT_CACHE_WRITE
+        + output_tokens * BUDGET_WEIGHT_OUTPUT
+    )
+    return (numerator + BUDGET_WEIGHT_DENOMINATOR - 1) // BUDGET_WEIGHT_DENOMINATOR
+
+
+def _compacted_tool_output(output: str) -> str:
+    digest = hashlib.sha256(output.encode("utf-8")).hexdigest()
+    return json.dumps(
+        {
+            "qore_compacted_tool_output": True,
+            "sha256": digest,
+            "original_chars": len(output),
+            "instruction": "Re-run the controller tool if exact prior content is needed.",
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def compact_conversation(
+    conversation: list[dict[str, Any]], *, keep_full: int = MAX_FULL_TOOL_OUTPUTS
+) -> list[dict[str, Any]]:
+    """Return a model-facing copy with old tool payloads replaced by digests.
+
+    The canonical in-memory transcript is not mutated. Reasoning/function-call
+    items remain present, satisfying the stateless Responses API continuation
+    contract, while exact old repository output can be re-read through tools.
+    """
+    if keep_full < 0:
+        raise WorkerError("keep_full must be non-negative")
+    positions = [
+        index
+        for index, item in enumerate(conversation)
+        if isinstance(item, dict) and item.get("type") == "function_call_output"
+    ]
+    compact_positions = set(positions[: max(0, len(positions) - keep_full)])
+    projected: list[dict[str, Any]] = []
+    for index, item in enumerate(conversation):
+        clone = dict(item)
+        if index in compact_positions:
+            output = clone.get("output")
+            if not isinstance(output, str):
+                raise WorkerError("function_call_output payload must be text")
+            clone["output"] = _compacted_tool_output(output)
+        projected.append(clone)
+    return projected
 
 
 def make_result(
@@ -389,43 +472,67 @@ def main() -> int:
         "If the contract cannot be safely completed in scope, finish BLOCKED.\n\nENGINEERING_REQUEST:\n"
         + json.dumps(request, separators=(",", ":"), ensure_ascii=False)
     )
-    conversation: list[dict[str, Any]] = [{"role":"user","content":[{"type":"input_text","text":prompt}]}]
+    conversation: list[dict[str, Any]] = [
+        {"role": "user", "content": [{"type": "input_text", "text": prompt}]}
+    ]
     usage_total: dict[str, int] = {}
     response_ids: list[str] = []
     final: dict[str, Any] | None = None
     completed_turns = 0
 
     for turn in range(1, MAX_TURNS + 1):
-        if usage_total.get("total_tokens", 0) >= MAX_TOTAL_TOKENS:
+        if spend_equivalent_tokens(usage_total) >= MAX_TOTAL_TOKENS:
             final = make_result(
-                repo, source, contract_id, "BLOCKED",
-                "Codex worker stopped at the hard cumulative API token budget.",
-                [f"MAX_TOTAL_TOKENS={MAX_TOTAL_TOKENS}", "No candidate was published."],
-                tools, completed_turns,
+                repo,
+                source,
+                contract_id,
+                "BLOCKED",
+                "Codex worker stopped at the hard spend-equivalent API token budget.",
+                [
+                    f"MAX_TOTAL_TOKENS={MAX_TOTAL_TOKENS} input-equivalent units",
+                    "Raw API usage remains preserved in the usage artifact.",
+                    "No candidate was published.",
+                ],
+                tools,
+                completed_turns,
             )
             break
-        payload = api_call(key, {
-            "model": MODEL,
-            "instructions": charter,
-            "input": conversation,
-            "tools": TOOLS,
-            "tool_choice": "required",
-            "parallel_tool_calls": False,
-            "reasoning": {"effort": "high"},
-            "max_output_tokens": 7000,
-            "store": False,
-            "prompt_cache_key": PROMPT_CACHE_KEY,
-            "metadata": {"qore_role":"principal_engineer_worker_v2","qore_main_sha":source,"contract_id":contract_id[:64]},
-        })
+        payload = api_call(
+            key,
+            {
+                "model": MODEL,
+                "instructions": charter,
+                "input": compact_conversation(conversation),
+                "tools": TOOLS,
+                "tool_choice": "required",
+                "parallel_tool_calls": False,
+                "reasoning": {"effort": "high"},
+                "max_output_tokens": 7000,
+                "store": False,
+                "prompt_cache_key": PROMPT_CACHE_KEY,
+                "metadata": {
+                    "qore_role": "principal_engineer_worker_v2",
+                    "qore_main_sha": source,
+                    "contract_id": contract_id[:64],
+                },
+            },
+        )
         completed_turns = turn
         if payload.get("status") != "completed":
             raise WorkerError(f"Codex response did not complete: {payload.get('status')}")
-        if isinstance(payload.get("id"), str): response_ids.append(payload["id"])
+        if isinstance(payload.get("id"), str):
+            response_ids.append(payload["id"])
         add_usage(usage_total, payload)
         outputs = payload.get("output")
-        if not isinstance(outputs, list): raise WorkerError("Codex response output is invalid")
-        calls = [item for item in outputs if isinstance(item, dict) and item.get("type") == "function_call"]
-        if len(calls) != 1: raise WorkerError(f"expected exactly one function call, got {len(calls)}")
+        if not isinstance(outputs, list):
+            raise WorkerError("Codex response output is invalid")
+        calls = [
+            item
+            for item in outputs
+            if isinstance(item, dict) and item.get("type") == "function_call"
+        ]
+        if len(calls) != 1:
+            raise WorkerError(f"expected exactly one function call, got {len(calls)}")
         call = calls[0]
         name, call_id, raw_args = call.get("name"), call.get("call_id"), call.get("arguments")
         if not all(isinstance(value, str) for value in (name, call_id, raw_args)):
@@ -434,48 +541,91 @@ def main() -> int:
             parsed = json.loads(raw_args)
         except json.JSONDecodeError as exc:
             raise WorkerError("function arguments are invalid JSON") from exc
-        if not isinstance(parsed, dict): raise WorkerError("function arguments must be an object")
+        if not isinstance(parsed, dict):
+            raise WorkerError("function arguments must be an object")
         conversation.extend(item for item in outputs if isinstance(item, dict))
 
         if name == "finish":
             status, summary, notes = parsed.get("status"), parsed.get("summary"), parsed.get("notes")
-            if status not in {"READY","BLOCKED"} or not isinstance(summary, str) or not isinstance(notes, list):
+            if status not in {"READY", "BLOCKED"} or not isinstance(summary, str) or not isinstance(notes, list):
                 raise WorkerError("finish arguments are invalid")
             if status == "READY":
-                if not changed_files(repo): raise WorkerError("READY requires a non-empty candidate")
-                if not tools.last_quality_success: raise WorkerError("READY requires green full gate after final patch")
-            final = make_result(repo, source, contract_id, status, summary, [str(x) for x in notes], tools, turn)
+                if not changed_files(repo):
+                    raise WorkerError("READY requires a non-empty candidate")
+                if not tools.last_quality_success:
+                    raise WorkerError("READY requires green full gate after final patch")
+            final = make_result(
+                repo, source, contract_id, status, summary, [str(x) for x in notes], tools, turn
+            )
             break
 
         try:
             result = dispatch_tool(tools, name, parsed)
-            tool_output: dict[str, Any] = {"ok":True,"result":result}
+            tool_output: dict[str, Any] = {"ok": True, "result": result}
         except (WorkerError, OSError, subprocess.TimeoutExpired) as exc:
-            tool_output = {"ok":False,"error":str(exc)}
-        conversation.append({"type":"function_call_output","call_id":call_id,"output":clip(json.dumps(tool_output, ensure_ascii=False))})
+            tool_output = {"ok": False, "error": str(exc)}
+        conversation.append(
+            {
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": clip(json.dumps(tool_output, ensure_ascii=False)),
+            }
+        )
 
-        if usage_total.get("total_tokens", 0) >= MAX_TOTAL_TOKENS:
+        if spend_equivalent_tokens(usage_total) >= MAX_TOTAL_TOKENS:
             final = make_result(
-                repo, source, contract_id, "BLOCKED",
-                "Codex worker reached the hard cumulative API token budget after the latest bounded tool action.",
-                [f"MAX_TOTAL_TOKENS={MAX_TOTAL_TOKENS}", "No candidate was published."],
-                tools, turn,
+                repo,
+                source,
+                contract_id,
+                "BLOCKED",
+                "Codex worker reached the hard spend-equivalent API token budget after the latest bounded tool action.",
+                [
+                    f"MAX_TOTAL_TOKENS={MAX_TOTAL_TOKENS} input-equivalent units",
+                    "Raw API usage remains preserved in the usage artifact.",
+                    "No candidate was published.",
+                ],
+                tools,
+                turn,
             )
             break
 
     if final is None:
         final = make_result(
-            repo, source, contract_id, "BLOCKED",
+            repo,
+            source,
+            contract_id,
+            "BLOCKED",
             "Codex worker reached the hard turn limit without a terminal engineering result.",
-            [f"MAX_TURNS={MAX_TURNS}", "No candidate was published."], tools, completed_turns,
+            [f"MAX_TURNS={MAX_TURNS}", "No candidate was published."],
+            tools,
+            completed_turns,
         )
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(final, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    usage_total.update({"model":MODEL,"prompt_cache_key":PROMPT_CACHE_KEY,"response_ids":response_ids,"turns":final["turns"],"max_turns":MAX_TURNS,"max_total_tokens":MAX_TOTAL_TOKENS})
-    Path(args.usage_output).write_text(json.dumps(usage_total, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(f"CODEX_ENGINEER_WORKER_V2_OK status={final['status']} main={source} contract={contract_id} changed_files={len(final['changed_files'])}")
+    raw_total_tokens = usage_total.get("total_tokens", 0)
+    usage_total.update(
+        {
+            "model": MODEL,
+            "prompt_cache_key": PROMPT_CACHE_KEY,
+            "response_ids": response_ids,
+            "turns": final["turns"],
+            "max_turns": MAX_TURNS,
+            "max_total_tokens": MAX_TOTAL_TOKENS,
+            "budget_formula_version": BUDGET_FORMULA_VERSION,
+            "budget_tokens": spend_equivalent_tokens(usage_total),
+            "raw_total_tokens": raw_total_tokens,
+            "max_full_tool_outputs": MAX_FULL_TOOL_OUTPUTS,
+        }
+    )
+    Path(args.usage_output).write_text(
+        json.dumps(usage_total, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(
+        f"CODEX_ENGINEER_WORKER_V2_OK status={final['status']} main={source} "
+        f"contract={contract_id} changed_files={len(final['changed_files'])}"
+    )
     return 0
 
 
