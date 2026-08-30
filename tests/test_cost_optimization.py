@@ -105,14 +105,16 @@ class CostOptimizationTests(unittest.TestCase):
         policy = select_sol_reasoning_v2.choose_effort(snapshot, "auto")
         self.assertEqual(policy["selected_effort"], "max")
 
-    def test_sol_input_places_stable_corpus_before_live_state(self):
+    def test_sol_input_places_stable_corpus_before_live_state_with_explicit_cache_breakpoint(self):
         snapshot = self.snapshot()
         raw = (json.dumps(snapshot, indent=2, sort_keys=True) + "\n").encode()
         context = build_model_context.build_context(snapshot, raw)
         model_input = run_sol_architect_v2._model_input(context, "xhigh")
         content = model_input[0]["content"]
         self.assertIn("STABLE QORE ARCHITECTURAL CORPUS", content[0]["text"])
+        self.assertEqual(content[0]["prompt_cache_breakpoint"], {"mode": "explicit"})
         self.assertIn("LIVE BOUNDED QORE STATE", content[1]["text"])
+        self.assertNotIn("prompt_cache_breakpoint", content[1])
         self.assertIn("xhigh", content[1]["text"])
 
 
