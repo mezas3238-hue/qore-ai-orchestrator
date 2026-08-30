@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Build reviewer packages while downloading public qore-core job logs without auth.
+"""Compatibility entrypoint for reviewer-package QG evidence.
 
-Metadata remains authenticated through build_reviewer_package.QORE_CORE_READ_TOKEN.
-Only the final job-log transport is replaced, and only after qore-core is
-independently attested as the expected public repository.
+The public-log transport helpers remain only for regression coverage of the
+failed transport experiment. Operational package construction no longer calls
+the GitHub job-log endpoint. ``main`` delegates to the exact frozen-QG builder,
+which reuses a summary already bound into the immutable architect snapshot and
+revalidates the referenced QORE CI run/job live.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import urllib.request
 from typing import Any
 
 import build_reviewer_package as package
+import build_reviewer_package_frozen_qg as frozen_qg
 
 QORE_REPO = "mezas3238-hue/qore-core"
 QORE_REPO_API = f"https://api.github.com/repos/{QORE_REPO}"
@@ -55,6 +58,7 @@ def attest_public_qore_repo() -> dict[str, Any]:
 
 
 def public_api_text(path: str) -> str:
+    """Legacy diagnostic helper. It is intentionally not used by main()."""
     if not path.startswith("/actions/jobs/") or not path.endswith("/logs"):
         raise package.PackageError("public transport is restricted to exact job-log endpoints")
     request = urllib.request.Request(package.API + path, headers=public_headers())
@@ -70,15 +74,7 @@ def public_api_text(path: str) -> str:
 
 
 def main() -> int:
-    try:
-        attest_public_qore_repo()
-    except PublicLogTransportError as exc:
-        raise SystemExit(f"REVIEW_PACKAGE_BLOCKED: {exc}") from exc
-    # Metadata and identity lookups still use package._headers(), including the
-    # narrow bridge token when configured. Only the public log download is
-    # deliberately unauthenticated.
-    package.api_text = public_api_text
-    return package.main()
+    return frozen_qg.main()
 
 
 if __name__ == "__main__":
