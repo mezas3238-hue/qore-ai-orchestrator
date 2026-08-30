@@ -2,7 +2,7 @@
 
 ## Status
 
-Rollout 002 introduces adaptive GPT-5.6 Sol reasoning and bounded dispatch to the existing Claude Code and DeepSeek reviewer repositories.
+Rollout 002 introduces adaptive GPT-5.6 Sol reasoning and bounded dispatch to the existing Claude Code and DeepSeek reviewer repositories. Rollout 003 adds bounded reviewer-state reconstruction so Sol can observe pending work and consume Claude's completed review artifact on a later cycle.
 
 This repository remains an external control plane. It is not part of `qore-core`, and no AI model becomes part of Core.
 
@@ -27,7 +27,7 @@ Default mode is `auto`. The deterministic controller selects an initial effort b
 
 - `medium`: routine reconstruction, clear status classification, and low-risk unambiguous coordination.
 - `high`: normal material technical coordination, active PR analysis, ordinary CI anomalies, or review routing.
-- `xhigh`: cross-cutting architecture, provider-neutrality interactions, compatibility, failover/fencing/reconciliation, state-machine or identity semantics, or material reviewer disagreement.
+- `xhigh`: cross-cutting architecture, provider-neutrality interactions, compatibility, failover/fencing/reconciliation, state-machine or identity semantics, or material reviewer disagreement/findings.
 - `max`: critical security/governance, invariant contradiction, Production/real-capital/credential authority, split-brain/safety authority ambiguity, serious architecture contradiction, or critical human-gate recommendation.
 
 Sol may request one strictly higher effort after its initial pass when the evidence encountered justifies it. The orchestrator permits at most one escalated retry on the same immutable snapshot. It never loops reasoning tiers without bound.
@@ -73,22 +73,39 @@ DEEPSEEK_API_KEY
 
 Those credentials remain isolated inside their current reviewer repositories.
 
-## Cross-repository GitHub dispatch credential
+## Reviewer return channel
 
-Real external dispatch (`external_dispatch_mode=execute`) requires one GitHub credential stored only as the orchestrator Actions secret:
+At the beginning of an architect cycle, when the reviewer bridge credential is configured, the orchestrator reads the existing reviewer repositories before calling Sol.
+
+For Claude it reads the current immutable request and searches for the exact artifact named `claude-<package_id>`. If found, it downloads that artifact through GitHub's signed artifact URL without forwarding the GitHub credential to the signed storage host, extracts only the bounded `claude-review.md`, classifies its mechanical verdict, and attaches the review to the immutable Sol snapshot. Sol must still verify that the request HEAD equals the live qore-core PR HEAD before treating the review as valid evidence.
+
+If the Claude request exists but no artifact exists yet, Sol sees `PENDING_OR_UNKNOWN` and must not duplicate an equivalent review merely because the prior one has not finished.
+
+For DeepSeek the current request is read so Sol can see which Expert/Coder stage is active. Final DeepSeek review evidence continues to come from the exact qore-core pull-request review, where the existing DeepSeek workflow already publishes it.
+
+## Cross-repository GitHub bridge credential
+
+External reviewer observation and real dispatch require one GitHub credential stored only as the orchestrator Actions secret:
 
 ```text
 QORE_REVIEWER_DISPATCH_TOKEN
 ```
 
-This is a GitHub repository-write credential, not an AI-provider key. It should be a fine-grained token restricted to exactly:
+This is a GitHub repository credential, not an AI-provider key. It should be a fine-grained token restricted to exactly:
 
 ```text
 mezas3238-hue/qore-claude-reviewer
 mezas3238-hue/qore-deepseek-reviewer
 ```
 
-Required repository permission: `Contents: Read and write`. No qore-core repository access and no Actions write permission are required by this bridge.
+Required repository permissions:
+
+```text
+Contents: Read and write
+Actions: Read-only
+```
+
+`Contents: Read and write` is needed only to create the new prompt and update `requests/current.json`. `Actions: Read-only` is needed only to observe/download Claude's completed review artifact. No qore-core repository access and no Actions write permission are required.
 
 The token value must never be committed, printed, placed in Variables, or sent through model prompts.
 
@@ -106,6 +123,7 @@ The first integrated run of this rollout should use `dry_run` before `execute` i
 
 - qore-core stays separate.
 - The architect cycle itself has `contents: read` repository permission.
+- Real cross-repository writes are allowed only from orchestrator `main`.
 - No external reviewer API/OAuth secret is moved to this repository.
 - No Production, productive credential, real capital, deposits/withdrawals, or real-money execution authority is granted.
 - Any candidate change invalidates prior exact-HEAD external reviews.

@@ -91,6 +91,17 @@ jobs:
             --repo-dir workspace/qore-core \
             --output artifacts/qore-state.json
 
+      - name: Collect existing Claude and DeepSeek state
+        env:
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/collect_external_reviewer_state.py \
+            --output artifacts/external-reviewer-state.json
+          python3 scripts/merge_external_reviewer_state.py \
+            --snapshot artifacts/qore-state.json \
+            --reviewers artifacts/external-reviewer-state.json
+
       - name: Validate snapshot before any model spend
         run: |
           set -euo pipefail
@@ -112,7 +123,12 @@ jobs:
               raise SystemExit("qore-core main is not observed as protected")
           if "quality" not in protection.get("required_status_contexts", []):
               raise SystemExit("required qore-core quality context was not observed")
-          print("Snapshot completeness and protection binding verified before spend.")
+          external = state.get("external_reviewer_state") or {}
+          if external.get("configured") is True and external.get("errors"):
+              raise SystemExit(f"External reviewer state is incomplete: {external['errors']}")
+          if "${{ inputs.external_dispatch_mode }}" == "execute" and external.get("configured") is not True:
+              raise SystemExit("execute mode requires QORE_REVIEWER_DISPATCH_TOKEN")
+          print("Snapshot, reviewer-state, and protection binding verified before spend.")
           PY
 
       - name: Select adaptive Sol reasoning effort
@@ -229,6 +245,12 @@ jobs:
           {
             echo "# QORE Architect cycle"
             echo
+            if [[ -f artifacts/external-reviewer-state.json ]]; then
+              echo "## External reviewer state"
+              echo '```json'
+              cat artifacts/external-reviewer-state.json
+              echo '```'
+            fi
             if [[ -f artifacts/sol-reasoning-policy.json ]]; then
               echo "## Adaptive reasoning policy"
               echo '```json'

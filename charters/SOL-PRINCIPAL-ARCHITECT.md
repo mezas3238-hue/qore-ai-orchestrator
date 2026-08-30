@@ -60,6 +60,17 @@ When routing to `DEEPSEEK`, use either `DEEPSEEK_EXPERT` or `DEEPSEEK_CODER`. Ne
 
 When no external review is being routed, set `review_contract.enabled=false`, `review_kind=NONE`, `pr_number=0`, and keep its scope/foci/acceptance/forbidden arrays empty.
 
+### Reviewer return state and adjudication
+
+The snapshot may contain `external_reviewer_state`, reconstructed independently from the existing private reviewer repositories.
+
+- Claude `current_request` identifies the latest package and exact frozen PR candidate known to the Claude repository.
+- Claude `status=COMPLETED` plus `review` means the orchestrator found the exact artifact named for that package and extracted `claude-review.md`. Treat it as independent reviewer evidence only if its request HEAD still equals the live PR HEAD in the same snapshot.
+- Claude `status=PENDING_OR_UNKNOWN` means a package exists but no completed artifact was observed. Do not redispatch an equivalent Claude review; normally return `NO_ACTION` while it is pending unless other repository evidence proves the package is obsolete.
+- DeepSeek `current_request` identifies the latest requested Expert/Coder package. DeepSeek final review evidence remains authoritative only when it appears on the exact qore-core PR/HEAD evidence.
+- Never treat a reviewer request as a PASS. Never treat an artifact from a stale HEAD as valid for a changed candidate.
+- Adjudicate findings independently: valid material defects route to the responsible engineer and invalidate prior frozen reviews after any candidate change; false positives must be explained from repository evidence; insufficient evidence is not a PASS.
+
 ## Hard QORE boundaries
 
 - Keep QORE Core provider-neutral. No reverse dependency from Core/Domain/Governance to concrete adapters.

@@ -66,6 +66,34 @@ def _signal_text(snapshot: dict[str, Any]) -> str:
     return "\n".join(parts).lower()
 
 
+def _reviewer_signals(snapshot: dict[str, Any]) -> list[str]:
+    signals: list[str] = []
+    external = snapshot.get("external_reviewer_state")
+    if isinstance(external, dict):
+        claude = external.get("claude")
+        if isinstance(claude, dict):
+            review = claude.get("review")
+            if isinstance(review, dict):
+                verdict = review.get("verdict")
+                if verdict in {"FINDINGS", "AMBIGUOUS", "MECHANICAL_FAILURE"}:
+                    signals.append(f"Claude return state is {verdict}")
+
+    for pr in snapshot.get("open_pull_requests", []):
+        if not isinstance(pr, dict):
+            continue
+        for review in pr.get("reviews", []):
+            if not isinstance(review, dict):
+                continue
+            body = str(review.get("body") or "")
+            if "QORE-DEEPSEEK-REVIEW" not in body:
+                continue
+            if "VALIDACIÓN NO OK" in body:
+                signals.append("DeepSeek exact-PR review reports VALIDACIÓN NO OK")
+            elif "EVIDENCIA INSUFICIENTE" in body or "VALIDATION BLOCKED" in body:
+                signals.append("DeepSeek exact-PR review reports insufficient/blocked evidence")
+    return signals
+
+
 def choose_effort(snapshot: dict[str, Any], requested_mode: str) -> dict[str, Any]:
     if requested_mode != "auto":
         if requested_mode not in RANK:
@@ -94,6 +122,11 @@ def choose_effort(snapshot: dict[str, Any], requested_mode: str) -> dict[str, An
     if len(pulls) >= 3:
         selected = "xhigh"
         reasons.append("multiple simultaneous open PRs increase integration ambiguity")
+
+    reviewer_signals = _reviewer_signals(snapshot)
+    if reviewer_signals and RANK[selected] < RANK["xhigh"]:
+        selected = "xhigh"
+        reasons.append("independent reviewer finding/ambiguity requires deeper adjudication: " + "; ".join(reviewer_signals[:3]))
 
     signal_text = _signal_text(snapshot)
     max_hits = sorted(term for term in MAX_TERMS if term in signal_text)
