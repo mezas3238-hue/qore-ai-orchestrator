@@ -63,7 +63,8 @@ jobs:
             scripts/run_codex_engineer_worker_v2.py \
             scripts/publish_codex_candidate_v2.py \
             scripts/build_reviewer_package.py \
-            scripts/dispatch_reviewer_request.py
+            scripts/dispatch_reviewer_request.py \
+            scripts/resume_after_agent_completion.py
 
       - name: Parse strict JSON schemas
         run: |
@@ -114,6 +115,14 @@ jobs:
           grep -F "augment_codex_worker_context.py" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "dispatch_codex_worker.py" .github/workflows/qore-architect-autonomous-v2.yml
           grep -F "codex_worker_mode" .github/workflows/qore-architect-autonomous-v2.yml
+          grep -F "workflow_run:" .github/workflows/qore-agent-completion-resume.yml
+          grep -F "repository_dispatch:" .github/workflows/qore-agent-completion-resume.yml
+          grep -F "qore_agent_completion_v1" .github/workflows/qore-agent-completion-resume.yml
+          grep -F -- "--max-auto-resumes 3" .github/workflows/qore-agent-completion-resume.yml
+          grep -F -- "--max-estimated-spend-usd 5.00" .github/workflows/qore-agent-completion-resume.yml
+          grep -F '"gpt-5.6-sol"' scripts/resume_after_agent_completion.py
+          grep -F '"gpt-5.3-codex"' scripts/resume_after_agent_completion.py
+          grep -F "LOOP_SIGNATURE_REPEATED_PACKAGE" scripts/resume_after_agent_completion.py
           ! grep -F "run_codex_engineer_plan_v2.py" .github/workflows/qore-architect-autonomous-v2.yml
           ! grep -F "QORE_CODEX_ENGINEER_TOKEN" scripts/run_codex_engineer_worker_v2.py
           ! grep -F "QORE_REVIEWER_DISPATCH_TOKEN" scripts/run_codex_engineer_worker_v2.py

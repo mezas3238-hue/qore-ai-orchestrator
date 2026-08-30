@@ -1,0 +1,95 @@
+name: QORE agent completion resume
+run-name: Resume gate · ${{ github.event_name }} · ${{ github.event.workflow_run.id || github.event.client_payload.workflow_run_id || github.run_id }}
+
+on:
+  workflow_run:
+    workflows:
+      - QORE Codex engineer worker
+    types:
+      - completed
+  repository_dispatch:
+    types:
+      - qore_agent_completion_v1
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Validate the resume controller without spending API budget
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: qore-agent-completion-resume
+  cancel-in-progress: false
+
+jobs:
+  resume-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Enforce trusted default-branch controller
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          echo "Completion controller is executing from orchestrator main."
+
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Select fail-closed resume mode
+        id: mode
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ '${{ inputs.dry_run }}' != 'true' ]]; then
+              echo "Manual completion-gate execution may only be dry-run; live continuation must originate from a bound agent completion." >&2
+              exit 22
+            fi
+            echo "mode=dry_run" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=execute" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate completion, budget and lineage; resume Sol once if authorized
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          python3 scripts/resume_after_agent_completion.py \
+            --event "$GITHUB_EVENT_PATH" \
+            --mode '${{ steps.mode.outputs.mode }}' \
+            --max-auto-resumes 3 \
+            --max-estimated-spend-usd 5.00 \
+            --output artifacts/qore-resume-receipt.json
+
+      - name: Publish bounded resume summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "# QORE agent completion resume"
+            echo "Event: $GITHUB_EVENT_NAME"
+            if [[ -f artifacts/qore-resume-receipt.json ]]; then
+              echo '```json'
+              cat artifacts/qore-resume-receipt.json
+              echo '```'
+            else
+              echo "No receipt was produced; the gate failed closed before continuation."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable resume receipt
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-agent-resume-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30
