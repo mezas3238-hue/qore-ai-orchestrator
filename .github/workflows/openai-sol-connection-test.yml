@@ -1,0 +1,51 @@
+name: OpenAI Sol connection test
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_api_spend:
+        description: Confirm this run may make one minimal paid OpenAI API request
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openai-sol-connection-test
+  cancel-in-progress: false
+
+jobs:
+  no-spend:
+    if: ${{ inputs.confirm_api_spend != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse API call until explicitly confirmed
+        run: |
+          echo "No API request made. Re-run with confirm_api_spend=true."
+
+  connection-test:
+    if: ${{ inputs.confirm_api_spend == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Verify secret is configured without exposing it
+        env:
+          OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$OPENAI_SOL_API_KEY"
+          echo "OPENAI_SOL_API_KEY is configured."
+
+      - name: Run one bounded GPT-5.6 Sol API probe
+        env:
+          OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
+        run: |
+          set -euo pipefail
+          python3 scripts/openai_sol_connection_test.py
