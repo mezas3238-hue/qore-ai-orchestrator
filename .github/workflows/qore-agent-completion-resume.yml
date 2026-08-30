@@ -5,11 +5,17 @@ on:
   workflow_run:
     workflows:
       - QORE Codex engineer worker
+      - QORE Architect autonomous V2
     types:
       - completed
   repository_dispatch:
     types:
       - qore_agent_completion_v1
+  push:
+    branches:
+      - main
+    paths:
+      - recovery/architect-pre-spend-current.json
   workflow_dispatch:
     inputs:
       dry_run:
@@ -63,14 +69,24 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          python3 scripts/resume_after_agent_completion_v2.py \
-            --event "$GITHUB_EVENT_PATH" \
-            --mode '${{ steps.mode.outputs.mode }}' \
-            --max-auto-resumes 3 \
-            --max-estimated-spend-usd 5.00 \
-            --max-sol-calls 12 \
-            --max-codex-jobs 3 \
-            --output artifacts/qore-resume-receipt.json
+          WORKFLOW_PATH=""
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]]; then
+            WORKFLOW_PATH="$(jq -r '.workflow_run.path // ""' "$GITHUB_EVENT_PATH")"
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == "push" || "$WORKFLOW_PATH" == ".github/workflows/qore-architect-autonomous-v2.yml" ]]; then
+            python3 scripts/recover_pre_spend_architect.py \
+              --event "$GITHUB_EVENT_PATH" \
+              --output artifacts/qore-resume-receipt.json
+          else
+            python3 scripts/resume_after_agent_completion_v2.py \
+              --event "$GITHUB_EVENT_PATH" \
+              --mode '${{ steps.mode.outputs.mode }}' \
+              --max-auto-resumes 3 \
+              --max-estimated-spend-usd 5.00 \
+              --max-sol-calls 12 \
+              --max-codex-jobs 3 \
+              --output artifacts/qore-resume-receipt.json
+          fi
 
       - name: Publish bounded resume summary
         if: ${{ always() }}
