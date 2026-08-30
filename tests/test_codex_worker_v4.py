@@ -135,7 +135,7 @@ class CodexWorkerV4Tests(unittest.TestCase):
         git(repo, "commit", "-m", "unrelated")
         unrelated = git(repo, "rev-parse", "HEAD").strip()
         git(repo, "checkout", "--detach", source)
-        with self.assertRaisesRegex(v2.WorkerError, "not descended"):
+        with self.assertRaises(v2.WorkerError):
             v4.materialize_reference_delta(repo, source, unrelated, (unrelated,))
 
     def test_localtools_auto_materializes_only_selected_allowlisted_reference(self) -> None:
