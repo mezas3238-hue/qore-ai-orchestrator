@@ -47,13 +47,13 @@ jobs:
             --expected-source-head '${{ inputs.expected_source_head_sha }}' \
             --output-dir artifacts
 
-      - name: Rebuild exact reviewer package with authorized qore-core Actions read
+      - name: Rebuild exact reviewer package with attested public qore-core QG logs
         env:
           QORE_CORE_READ_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
         run: |
           set -euo pipefail
           test -n "$QORE_CORE_READ_TOKEN"
-          python3 scripts/build_reviewer_package.py \
+          python3 scripts/build_reviewer_package_public_logs.py \
             --decision artifacts/architect-decision.json \
             --snapshot artifacts/qore-state.json \
             --orchestrator-run-id '${{ github.run_id }}' \
