@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          python3 scripts/resume_after_agent_completion.py \
+          python3 scripts/resume_after_agent_completion_v2.py \
             --event "$GITHUB_EVENT_PATH" \
             --mode '${{ steps.mode.outputs.mode }}' \
             --max-auto-resumes 3 \
