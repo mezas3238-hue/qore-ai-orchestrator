@@ -12,7 +12,10 @@ from typing import Any
 
 TIERS = ("medium", "high", "xhigh", "max")
 RANK = {name: index for index, name in enumerate(TIERS)}
-OUTPUT_LIMITS = {"medium": 4000, "high": 5500, "xhigh": 8000, "max": 10000}
+# Responses API max_output_tokens covers reasoning plus visible output. These ceilings
+# remain bounded by run_sol_architect_v2.py's 20k hard limit while leaving enough room
+# for reasoning models to emit the strict JSON decision after internal reasoning.
+OUTPUT_LIMITS = {"medium": 6000, "high": 8000, "xhigh": 16000, "max": 20000}
 ACTIVE_PR_WINDOW_DAYS = 7
 ISSUE_REF_RE = re.compile(r"(?<![\w/])#(?P<number>\d{1,6})\b")
 

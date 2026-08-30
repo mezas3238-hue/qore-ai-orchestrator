@@ -15,6 +15,7 @@ from typing import Any
 
 ENDPOINT = "https://api.openai.com/v1/responses"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 EFFORTS = ("medium", "high", "xhigh", "max")
 EFFORT_RANK = {name: index for index, name in enumerate(EFFORTS)}
 PROMPT_CACHE_KEY = "qore-sol-principal-architect-v1"
@@ -29,6 +30,55 @@ def output_text(payload: dict[str, Any]) -> str:
             if isinstance(part, dict) and part.get("type") == "output_text" and isinstance(part.get("text"), str):
                 chunks.append(part["text"])
     return "".join(chunks).strip()
+
+
+def _safe_code(value: Any) -> str | None:
+    if isinstance(value, str) and SAFE_CODE_RE.fullmatch(value):
+        return value
+    return None
+
+
+def safe_usage_record(
+    payload: dict[str, Any], snapshot: dict[str, Any], effort: str, max_output_tokens: int
+) -> dict[str, Any]:
+    """Return diagnostic/token metadata only; never preserve model text or provider messages."""
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    input_details = usage.get("input_tokens_details") if isinstance(usage, dict) else {}
+    output_details = usage.get("output_tokens_details") if isinstance(usage, dict) else {}
+    input_details = input_details if isinstance(input_details, dict) else {}
+    output_details = output_details if isinstance(output_details, dict) else {}
+    metrics = snapshot.get("metrics") if isinstance(snapshot.get("metrics"), dict) else {}
+    incomplete = payload.get("incomplete_details") if isinstance(payload.get("incomplete_details"), dict) else {}
+    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    return {
+        "response_id": payload.get("id"),
+        "model": payload.get("model"),
+        "response_status": _safe_code(payload.get("status")) or "unknown",
+        "incomplete_reason": _safe_code(incomplete.get("reason")),
+        "response_error_code": _safe_code(error.get("code")),
+        "reasoning_effort": effort,
+        "max_output_tokens": max_output_tokens,
+        "input_tokens": usage.get("input_tokens"),
+        "cached_tokens": input_details.get("cached_tokens"),
+        "cache_write_tokens": input_details.get("cache_write_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+        "reasoning_tokens": output_details.get("reasoning_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "prompt_cache_key": PROMPT_CACHE_KEY,
+        "prompt_cache_mode": "explicit",
+        "model_context_chars": metrics.get("architect_context_chars"),
+        "full_snapshot_chars": metrics.get("full_snapshot_chars"),
+    }
+
+
+def write_usage_record(
+    path: str, payload: dict[str, Any], snapshot: dict[str, Any], effort: str, max_output_tokens: int
+) -> dict[str, Any]:
+    record = safe_usage_record(payload, snapshot, effort, max_output_tokens)
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return record
 
 
 def _disabled_review_contract(contract: dict[str, Any]) -> bool:
@@ -112,11 +162,7 @@ def _model_input(snapshot: dict[str, Any], effort: str) -> Any:
         + json.dumps(dynamic, separators=(",", ":"), ensure_ascii=False)
     )
     return [{"role": "user", "content": [
-        {
-            "type": "input_text",
-            "text": stable_text,
-            "prompt_cache_breakpoint": {"mode": "explicit"},
-        },
+        {"type": "input_text", "text": stable_text, "prompt_cache_breakpoint": {"mode": "explicit"}},
         {"type": "input_text", "text": dynamic_text},
     ]}]
 
@@ -152,7 +198,7 @@ def main() -> int:
         print("Invalid SOL_REASONING_EFFORT.", file=sys.stderr)
         return 2
     try:
-        max_output_tokens = int(os.environ.get("SOL_MAX_OUTPUT_TOKENS", "5500"))
+        max_output_tokens = int(os.environ.get("SOL_MAX_OUTPUT_TOKENS", "8000"))
     except ValueError:
         print("Invalid SOL_MAX_OUTPUT_TOKENS.", file=sys.stderr)
         return 2
@@ -181,9 +227,13 @@ def main() -> int:
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         print(f"OpenAI Sol request failed: {type(exc).__name__}", file=sys.stderr)
         return 4
+
+    usage_record = write_usage_record(args.usage_output, payload, snapshot, effort, max_output_tokens)
     if payload.get("status") != "completed":
-        print(f"OpenAI Sol response did not complete: {payload.get('status')}", file=sys.stderr)
+        reason = usage_record.get("incomplete_reason") or usage_record.get("response_error_code") or "unknown"
+        print(f"OpenAI Sol response did not complete: {payload.get('status')} reason={reason}", file=sys.stderr)
         return 5
+
     rendered = output_text(payload)
     try:
         decision = json.loads(rendered)
@@ -194,22 +244,6 @@ def main() -> int:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(decision, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    input_details = usage.get("input_tokens_details") if isinstance(usage, dict) else {}
-    output_details = usage.get("output_tokens_details") if isinstance(usage, dict) else {}
-    input_details = input_details if isinstance(input_details, dict) else {}
-    output_details = output_details if isinstance(output_details, dict) else {}
-    metrics = snapshot.get("metrics") if isinstance(snapshot.get("metrics"), dict) else {}
-    safe_usage = {
-        "response_id": payload.get("id"), "model": payload.get("model"), "reasoning_effort": effort,
-        "max_output_tokens": max_output_tokens, "input_tokens": usage.get("input_tokens"),
-        "cached_tokens": input_details.get("cached_tokens"), "cache_write_tokens": input_details.get("cache_write_tokens"),
-        "output_tokens": usage.get("output_tokens"), "reasoning_tokens": output_details.get("reasoning_tokens"),
-        "total_tokens": usage.get("total_tokens"), "prompt_cache_key": PROMPT_CACHE_KEY,
-        "prompt_cache_mode": "explicit",
-        "model_context_chars": metrics.get("architect_context_chars"), "full_snapshot_chars": metrics.get("full_snapshot_chars"),
-    }
-    Path(args.usage_output).write_text(json.dumps(safe_usage, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print("SOL_ARCHITECT_OK main={} effort={} status={} next_actor={}".format(main_sha, effort, decision["status"], decision["next_actor"]))
     return 0
 
