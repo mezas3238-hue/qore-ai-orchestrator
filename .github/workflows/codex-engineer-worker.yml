@@ -74,7 +74,7 @@ jobs:
               raise SystemExit("Production authority is forbidden")
           contract = value.get("engineering_contract") or {}
           if contract.get("target_repository") != "mezas3238-hue/qore-core":
-              raise SystemExit("worker V2 is restricted to qore-core")
+              raise SystemExit("worker V3 is restricted to qore-core")
           Path("artifacts/codex-request.json").write_text(
               json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
           )
@@ -115,12 +115,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run bounded GPT-5.3-Codex engineering worker V2
+      - name: Run bounded GPT-5.3-Codex engineering worker V3
         env:
           OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
         run: |
           set -euo pipefail
-          python3 scripts/run_codex_engineer_worker_v2.py \
+          python3 scripts/run_codex_engineer_worker_v3.py \
             --repo-dir workspace/qore-core \
             --request artifacts/codex-request.json \
             --charter charters/CODEX-PRINCIPAL-ENGINEER.md \
