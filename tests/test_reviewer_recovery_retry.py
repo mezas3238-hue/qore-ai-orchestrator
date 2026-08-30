@@ -19,14 +19,21 @@ class ReviewerRecoveryRetryTests(unittest.TestCase):
         self.assertTrue(eligible)
         self.assertEqual(matches, [])
 
-    def test_one_terminal_failure_without_side_effects_can_retry(self) -> None:
-        run = {"id": 10, "status": "completed", "conclusion": "failure"}
-        with (
-            patch.object(retry, "matching_recoveries", return_value=[run]),
-            patch.object(retry, "attempt_has_side_effect_evidence", return_value=False),
+    def test_one_or_two_terminal_failures_without_side_effects_can_retry(self) -> None:
+        for runs in (
+            [{"id": 10, "status": "completed", "conclusion": "failure"}],
+            [
+                {"id": 10, "status": "completed", "conclusion": "failure"},
+                {"id": 11, "status": "completed", "conclusion": "failure"},
+            ],
         ):
-            eligible, _ = retry.retry_eligible("token", 123)
-        self.assertTrue(eligible)
+            with self.subTest(count=len(runs)):
+                with (
+                    patch.object(retry, "matching_recoveries", return_value=runs),
+                    patch.object(retry, "attempt_has_side_effect_evidence", return_value=False),
+                ):
+                    eligible, _ = retry.retry_eligible("token", 123)
+                self.assertTrue(eligible)
 
     def test_active_success_or_side_effect_attempt_blocks_retry(self) -> None:
         active = {"id": 10, "status": "in_progress", "conclusion": None}
@@ -47,10 +54,11 @@ class ReviewerRecoveryRetryTests(unittest.TestCase):
             eligible, _ = retry.retry_eligible("token", 123)
         self.assertFalse(eligible)
 
-    def test_second_terminal_failure_exhausts_retry_cap(self) -> None:
+    def test_third_terminal_failure_exhausts_retry_cap(self) -> None:
         runs = [
             {"id": 10, "status": "completed", "conclusion": "failure"},
             {"id": 11, "status": "completed", "conclusion": "failure"},
+            {"id": 12, "status": "completed", "conclusion": "failure"},
         ]
         with (
             patch.object(retry, "matching_recoveries", return_value=runs),
