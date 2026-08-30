@@ -1,0 +1,203 @@
+name: QORE Codex engineer worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_api_spend:
+        description: Allow bounded GPT-5.3-Codex engineering API calls
+        required: true
+        type: boolean
+        default: false
+      publish_candidate:
+        description: Publish a green READY candidate as a qore-core draft PR
+        required: true
+        type: boolean
+        default: false
+      request_json:
+        description: Immutable qore.codex.engineering.request.v1 JSON
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qore-codex-engineer-worker
+  cancel-in-progress: false
+
+jobs:
+  no-spend:
+    if: ${{ inputs.confirm_api_spend != true }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "No Codex request made. Re-run with confirm_api_spend=true."
+
+  worker:
+    if: ${{ inputs.confirm_api_spend == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Enforce trusted orchestrator ref
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Materialize and validate immutable engineering request
+        env:
+          CODEX_REQUEST_JSON: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts workspace
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          value = json.loads(os.environ["CODEX_REQUEST_JSON"])
+          if value.get("schema_version") != "qore.codex.engineering.request.v1":
+              raise SystemExit("unexpected Codex engineering request schema")
+          if value.get("production_authority") is not False:
+              raise SystemExit("Production authority is forbidden")
+          Path("artifacts/codex-request.json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          Path("artifacts/source-main.txt").write_text(str(value.get("source_main_sha", "")) + "\n")
+          PY
+
+      - name: Verify worker credentials without exposing values
+        env:
+          OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
+          QORE_CODEX_ENGINEER_TOKEN: ${{ secrets.QORE_CODEX_ENGINEER_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$OPENAI_CODEX_API_KEY"
+          if [[ "${{ inputs.publish_candidate }}" == "true" ]]; then
+            test -n "$QORE_CODEX_ENGINEER_TOKEN"
+          fi
+          echo "Required worker credentials are configured."
+
+      - name: Checkout exact qore-core source without write credentials
+        run: |
+          set -euo pipefail
+          SOURCE=$(cat artifacts/source-main.txt)
+          [[ "$SOURCE" =~ ^[0-9a-f]{40}$ ]]
+          git clone https://github.com/mezas3238-hue/qore-core.git workspace/qore-core
+          git -C workspace/qore-core checkout --detach "$SOURCE"
+          test "$(git -C workspace/qore-core rev-parse HEAD)" = "$SOURCE"
+          test -z "$(git -C workspace/qore-core status --porcelain)"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install exact qore-core development environment
+        working-directory: workspace/qore-core
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run bounded GPT-5.3-Codex engineering worker
+        env:
+          OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
+        run: |
+          set -euo pipefail
+          python3 scripts/run_codex_engineer_worker.py \
+            --repo-dir workspace/qore-core \
+            --request artifacts/codex-request.json \
+            --charter charters/CODEX-PRINCIPAL-ENGINEER.md \
+            --output artifacts/codex-worker-result.json \
+            --usage-output artifacts/codex-worker-usage.json
+
+      - name: Classify worker result
+        id: result
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          r = json.load(open("artifacts/codex-worker-result.json"))
+          print("status=" + r["status"])
+          print("ready=" + ("true" if r["status"] == "READY" else "false"))
+          PY
+
+      - name: Controller reruns Ruff on READY candidate
+        if: ${{ steps.result.outputs.ready == 'true' }}
+        working-directory: workspace/qore-core
+        run: ruff check .
+
+      - name: Controller reruns Mypy on READY candidate
+        if: ${{ steps.result.outputs.ready == 'true' }}
+        working-directory: workspace/qore-core
+        run: mypy src tests
+
+      - name: Controller reruns Pytest coverage on READY candidate
+        if: ${{ steps.result.outputs.ready == 'true' }}
+        working-directory: workspace/qore-core
+        run: pytest --cov=src/qore --cov-report=term-missing
+
+      - name: Record independent controller Quality Gate
+        if: ${{ steps.result.outputs.ready == 'true' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          Path("artifacts/codex-controller-qg.json").write_text(json.dumps({
+              "schema_version": "qore.codex.controller.qg.v1",
+              "ruff": "SUCCESS",
+              "mypy": "SUCCESS",
+              "pytest_coverage": "SUCCESS",
+              "production_authority": False,
+          }, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Publish green candidate through isolated GitHub authority
+        if: ${{ steps.result.outputs.ready == 'true' && inputs.publish_candidate == true }}
+        env:
+          QORE_CODEX_ENGINEER_TOKEN: ${{ secrets.QORE_CODEX_ENGINEER_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -f artifacts/codex-controller-qg.json
+          python3 scripts/publish_codex_candidate.py \
+            --repo-dir workspace/qore-core \
+            --request artifacts/codex-request.json \
+            --worker-result artifacts/codex-worker-result.json \
+            --output artifacts/codex-publication.json
+
+      - name: Publish bounded worker summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "# QORE Codex engineer worker"
+            if [[ -f artifacts/codex-worker-result.json ]]; then
+              echo "## Worker result"
+              echo '```json'
+              cat artifacts/codex-worker-result.json
+              echo '```'
+            fi
+            if [[ -f artifacts/codex-worker-usage.json ]]; then
+              echo "## API usage"
+              echo '```json'
+              cat artifacts/codex-worker-usage.json
+              echo '```'
+            fi
+            if [[ -f artifacts/codex-publication.json ]]; then
+              echo "## Publication"
+              echo '```json'
+              cat artifacts/codex-publication.json
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload bounded worker evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-codex-worker-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
