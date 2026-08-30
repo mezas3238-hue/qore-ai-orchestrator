@@ -70,6 +70,13 @@ jobs:
           fi
           echo "Required OpenAI credentials are configured."
 
+      - name: Enforce trusted ref for external execute mode
+        if: ${{ inputs.external_dispatch_mode == 'execute' }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          echo "External reviewer execute mode is bound to orchestrator main."
+
       - name: Checkout live qore-core read-only
         run: |
           set -euo pipefail
@@ -204,7 +211,7 @@ jobs:
             --metadata-output artifacts/reviewer-package.json
 
       - name: Dispatch to existing reviewer repository
-        if: ${{ inputs.external_dispatch_mode == 'execute' && (steps.routing.outputs.actor == 'CLAUDE_CODE' || steps.routing.outputs.actor == 'DEEPSEEK') && steps.routing.outputs.review_enabled == 'true' }}
+        if: ${{ inputs.external_dispatch_mode == 'execute' && github.ref == 'refs/heads/main' && (steps.routing.outputs.actor == 'CLAUDE_CODE' || steps.routing.outputs.actor == 'DEEPSEEK') && steps.routing.outputs.review_enabled == 'true' }}
         env:
           QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
         run: |
