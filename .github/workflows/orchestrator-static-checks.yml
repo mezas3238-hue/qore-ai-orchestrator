@@ -75,6 +75,7 @@ jobs:
             scripts/resume_after_agent_completion.py \
             scripts/resume_after_agent_completion_v2.py \
             scripts/recover_pre_spend_architect.py \
+            scripts/recover_post_spend_architect.py \
             scripts/rearm_autonomy.py
 
       - name: Parse strict JSON schemas and recovery requests
@@ -106,6 +107,14 @@ jobs:
               "expected_failed_head_sha",
               "source_resume_run_id",
               "reason",
+          }
+          post_spend_allowed = {
+              "schema_version",
+              "failed_architect_run_id",
+              "source_rearm_run_id",
+              "confirmation",
+              "reason",
+              "production_authority",
           }
           codex_replay_allowed = {
               "schema_version",
@@ -146,6 +155,22 @@ jobs:
                       raise SystemExit(f"{path}: source resume run ID is invalid")
                   if not isinstance(head, str) or re.fullmatch(r"[0-9a-f]{40}", head) is None:
                       raise SystemExit(f"{path}: failed child HEAD is invalid")
+                  reason = value.get("reason")
+                  if not isinstance(reason, str) or not reason.strip():
+                      raise SystemExit(f"{path}: recovery reason is empty")
+              elif schema == "qore.architect.post_spend.recovery.request.v1":
+                  if set(value) != post_spend_allowed:
+                      raise SystemExit(f"{path}: post-spend recovery request keys are not exact")
+                  failed_run = value.get("failed_architect_run_id")
+                  source_rearm = value.get("source_rearm_run_id")
+                  if type(failed_run) is not int or failed_run <= 0:
+                      raise SystemExit(f"{path}: failed architect run ID is invalid")
+                  if type(source_rearm) is not int or source_rearm <= 0:
+                      raise SystemExit(f"{path}: source rearm run ID is invalid")
+                  if value.get("confirmation") != "RECOVER_INCOMPLETE_SOL":
+                      raise SystemExit(f"{path}: post-spend recovery confirmation is invalid")
+                  if value.get("production_authority") is not False:
+                      raise SystemExit(f"{path}: production authority must remain false")
                   reason = value.get("reason")
                   if not isinstance(reason, str) or not reason.strip():
                       raise SystemExit(f"{path}: recovery reason is empty")
@@ -221,6 +246,11 @@ jobs:
           grep -F "qore_agent_completion_v1" .github/workflows/qore-agent-completion-resume.yml
           grep -F "recovery/architect-pre-spend-current.json" .github/workflows/qore-agent-completion-resume.yml
           grep -F "recover_pre_spend_architect.py" .github/workflows/qore-agent-completion-resume.yml
+          grep -F "recovery/architect-post-spend-current.json" .github/workflows/qore-agent-completion-resume.yml
+          grep -F "recover_post_spend_architect.py" .github/workflows/qore-agent-completion-resume.yml
+          grep -F "MAX_POST_SPEND_RECOVERIES_PER_SESSION = 1" scripts/recover_post_spend_architect.py
+          grep -F "RECOVER_INCOMPLETE_SOL" scripts/recover_post_spend_architect.py
+          grep -F "production_authority" scripts/recover_post_spend_architect.py
           grep -F "PRE_SPEND_RECOVERY_ALREADY_DISPATCHED" scripts/recover_pre_spend_architect.py
           grep -F "MAX_PRE_SPEND_RECOVERIES_PER_SESSION = 1" scripts/recover_pre_spend_architect.py
           grep -F "verified_no_model_or_agent_side_effect" scripts/recover_pre_spend_architect.py
