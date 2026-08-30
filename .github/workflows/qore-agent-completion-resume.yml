@@ -75,16 +75,23 @@ jobs:
             WORKFLOW_PATH="$(jq -r '.workflow_run.path // ""' "$GITHUB_EVENT_PATH")"
           fi
           if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            CHANGED="$(git show --pretty='' --name-only "$GITHUB_SHA")"
-            if [[ "$CHANGED" == "recovery/architect-post-spend-current.json" ]]; then
-              python3 scripts/recover_post_spend_architect.py \
-                --event "$GITHUB_EVENT_PATH" \
-                --output artifacts/qore-resume-receipt.json
-            else
-              python3 scripts/recover_pre_spend_architect.py \
-                --event "$GITHUB_EVENT_PATH" \
-                --output artifacts/qore-resume-receipt.json
-            fi
+            RECOVERY_MODE="$(python3 scripts/select_architect_recovery_mode.py --event "$GITHUB_EVENT_PATH")"
+            case "$RECOVERY_MODE" in
+              post_spend)
+                python3 scripts/recover_post_spend_architect.py \
+                  --event "$GITHUB_EVENT_PATH" \
+                  --output artifacts/qore-resume-receipt.json
+                ;;
+              pre_spend)
+                python3 scripts/recover_pre_spend_architect.py \
+                  --event "$GITHUB_EVENT_PATH" \
+                  --output artifacts/qore-resume-receipt.json
+                ;;
+              *)
+                echo "Unsupported recovery routing mode" >&2
+                exit 23
+                ;;
+            esac
           elif [[ "$WORKFLOW_PATH" == ".github/workflows/qore-architect-autonomous-v2.yml" ]]; then
             python3 scripts/recover_pre_spend_architect.py \
               --event "$GITHUB_EVENT_PATH" \
