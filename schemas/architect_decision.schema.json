@@ -6,7 +6,14 @@
     "source_main_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "status": {
       "type": "string",
-      "enum": ["NO_ACTION", "ENGINEERING_TASK", "REVIEW_TASK", "HUMAN_DECISION_REQUIRED", "RECONSTRUCTION_REQUIRED"]
+      "enum": [
+        "ENGINEERING_TASK",
+        "REVIEW_TASK",
+        "WAITING_AGENT",
+        "HUMAN_DECISION_REQUIRED",
+        "RECONSTRUCTION_REQUIRED",
+        "PROGRAM_COMPLETE"
+      ]
     },
     "reasoning_assessment": {
       "type": "object",
@@ -40,13 +47,17 @@
       "properties": {
         "enabled": {"type": "boolean"},
         "contract_id": {"type": "string"},
+        "target_repository": {"type": "string"},
         "objective": {"type": "string"},
         "scope": {"type": "array", "items": {"type": "string"}},
         "acceptance": {"type": "array", "items": {"type": "string"}},
         "required_tests": {"type": "array", "items": {"type": "string"}},
         "forbidden": {"type": "array", "items": {"type": "string"}}
       },
-      "required": ["enabled", "contract_id", "objective", "scope", "acceptance", "required_tests", "forbidden"]
+      "required": [
+        "enabled", "contract_id", "target_repository", "objective", "scope", "acceptance",
+        "required_tests", "forbidden"
+      ]
     },
     "review_contract": {
       "type": "object",
@@ -70,6 +81,17 @@
         "adversarial_foci", "acceptance", "forbidden"
       ]
     },
+    "wait_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "actor": {"type": "string", "enum": ["NONE", "CODEX", "CLAUDE_CODE", "DEEPSEEK"]},
+        "package_id": {"type": "string"},
+        "reason": {"type": "string"}
+      },
+      "required": ["enabled", "actor", "package_id", "reason"]
+    },
     "evidence": {
       "type": "array",
       "items": {
@@ -88,7 +110,7 @@
   },
   "required": [
     "schema_version", "source_main_sha", "status", "reasoning_assessment", "roadmap_anchor", "decision",
-    "next_actor", "engineering_contract", "review_contract", "evidence", "evidence_requests",
+    "next_actor", "engineering_contract", "review_contract", "wait_state", "evidence", "evidence_requests",
     "risk_gates", "production_authority"
   ]
 }
