@@ -310,7 +310,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$QORE_CORE_READ_TOKEN"
-          python3 scripts/build_reviewer_package.py \
+          python3 scripts/build_reviewer_package_public_logs.py \
             --decision artifacts/architect-decision.json \
             --snapshot artifacts/qore-state.json \
             --orchestrator-run-id '${{ github.run_id }}' \
