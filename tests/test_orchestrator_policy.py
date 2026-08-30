@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import build_reviewer_package
+import collect_external_reviewer_state
 import dispatch_reviewer_request
 import evaluate_sol_escalation
 import run_sol_architect
@@ -47,6 +48,17 @@ class ReasoningPolicyTests(unittest.TestCase):
             self.snapshot(open_issues=[{"title": "Security credential boundary", "labels": []}]), "auto"
         )
         self.assertEqual(policy["selected_effort"], "max")
+
+    def test_reviewer_finding_uses_xhigh(self):
+        policy = select_sol_reasoning.choose_effort(
+            self.snapshot(
+                external_reviewer_state={
+                    "claude": {"review": {"verdict": "FINDINGS", "text": "VALIDACIÓN NO OK"}}
+                }
+            ),
+            "auto",
+        )
+        self.assertEqual(policy["selected_effort"], "xhigh")
 
     def test_explicit_override_is_respected(self):
         policy = select_sol_reasoning.choose_effort(self.snapshot(), "xhigh")
@@ -184,6 +196,20 @@ class ReviewerRoutingTests(unittest.TestCase):
                 dispatch_reviewer_request.DEEPSEEK_REPO, prior, candidate
             )
         )
+
+
+class ClaudeReturnTests(unittest.TestCase):
+    def test_clean_verdict(self):
+        text = "HALLAZGOS: NINGUNO\nVALIDACIÓN OK"
+        self.assertEqual(collect_external_reviewer_state.classify_claude_review(text), "CLEAN")
+
+    def test_findings_verdict(self):
+        text = "HALLAZGOS: 1\nVALIDACIÓN NO OK"
+        self.assertEqual(collect_external_reviewer_state.classify_claude_review(text), "FINDINGS")
+
+    def test_ambiguous_verdict_fails_classification(self):
+        text = "VALIDACIÓN OK\nVALIDACIÓN NO OK"
+        self.assertEqual(collect_external_reviewer_state.classify_claude_review(text), "FINDINGS")
 
 
 if __name__ == "__main__":
