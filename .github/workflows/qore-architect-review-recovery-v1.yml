@@ -1,0 +1,98 @@
+name: QORE Architect autonomous V2
+run-name: QORE Architect reviewer recovery · source R${{ inputs.source_architect_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_architect_run_id:
+        description: Failed canonical Autonomous V2 run containing the frozen REVIEW_TASK decision
+        required: true
+        type: string
+      expected_source_head_sha:
+        description: Exact orchestrator HEAD used by the source architect run
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: qore-architect-review-recovery-${{ inputs.source_architect_run_id }}
+  cancel-in-progress: false
+
+jobs:
+  recover-review-dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Enforce trusted recovery ref
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          echo "Reviewer recovery authority is bound to orchestrator main."
+
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Rehydrate exact source architect evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare_reviewer_recovery.py \
+            --source-run-id '${{ inputs.source_architect_run_id }}' \
+            --expected-source-head '${{ inputs.expected_source_head_sha }}' \
+            --output-dir artifacts
+
+      - name: Rebuild exact reviewer package with authorized qore-core Actions read
+        env:
+          QORE_CORE_READ_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$QORE_CORE_READ_TOKEN"
+          python3 scripts/build_reviewer_package.py \
+            --decision artifacts/architect-decision.json \
+            --snapshot artifacts/qore-state.json \
+            --orchestrator-run-id '${{ github.run_id }}' \
+            --prompt-output artifacts/reviewer-prompt.md \
+            --request-output artifacts/reviewer-request.json \
+            --metadata-output artifacts/reviewer-package.json
+
+      - name: Dispatch only after terminal failed equivalent proof
+        env:
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$QORE_REVIEWER_DISPATCH_TOKEN"
+          python3 scripts/dispatch_reviewer_request_recovery.py \
+            --prompt artifacts/reviewer-prompt.md \
+            --request artifacts/reviewer-request.json \
+            --metadata artifacts/reviewer-package.json \
+            --result-output artifacts/reviewer-dispatch.json
+
+      - name: Publish bounded recovery summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "# QORE reviewer dispatch recovery"
+            for item in reviewer-recovery-source.json architect-decision.json reviewer-package.json reviewer-dispatch.json; do
+              if [[ -f "artifacts/$item" ]]; then
+                echo "## $item"
+                echo '```json'
+                cat "artifacts/$item"
+                echo '```'
+              fi
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload recovery parent artifact for normal callback lineage
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-architect-v2-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
