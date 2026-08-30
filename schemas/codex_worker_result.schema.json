@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "const": "qore.codex.worker.result.v1"},
+    "source_main_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "contract_id": {"type": "string"},
+    "status": {"type": "string", "enum": ["READY", "BLOCKED"]},
+    "summary": {"type": "string"},
+    "notes": {"type": "array", "items": {"type": "string"}},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "quality_gate_success": {"type": "boolean"},
+    "quality_gate_runs": {"type": "integer", "minimum": 0},
+    "diff_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "turns": {"type": "integer", "minimum": 1},
+    "production_authority": {"type": "boolean", "const": false}
+  },
+  "required": ["schema_version", "source_main_sha", "contract_id", "status", "summary", "notes", "changed_files", "quality_gate_success", "quality_gate_runs", "diff_sha256", "turns", "production_authority"]
+}

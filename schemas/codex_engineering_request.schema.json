@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "const": "qore.codex.engineering.request.v1"},
+    "source_main_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "architect_run_id": {"type": "string"},
+    "engineering_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {"type": "boolean", "const": true},
+        "contract_id": {"type": "string", "minLength": 1},
+        "target_repository": {"type": "string", "const": "mezas3238-hue/qore-core"},
+        "objective": {"type": "string"},
+        "scope": {"type": "array", "items": {"type": "string"}},
+        "acceptance": {"type": "array", "items": {"type": "string"}},
+        "required_tests": {"type": "array", "items": {"type": "string"}},
+        "forbidden": {"type": "array", "items": {"type": "string"}}
+      },
+      "required": ["enabled", "contract_id", "target_repository", "objective", "scope", "acceptance", "required_tests", "forbidden"]
+    },
+    "production_authority": {"type": "boolean", "const": false}
+  },
+  "required": ["schema_version", "source_main_sha", "architect_run_id", "engineering_contract", "production_authority"]
+}
