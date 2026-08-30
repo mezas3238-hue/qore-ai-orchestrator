@@ -6,6 +6,7 @@ on:
       - "charters/**"
       - "schemas/**"
       - "scripts/**"
+      - "tests/**"
       - ".github/workflows/**"
       - "docs/**"
   push:
@@ -15,6 +16,7 @@ on:
       - "charters/**"
       - "schemas/**"
       - "scripts/**"
+      - "tests/**"
       - ".github/workflows/**"
       - "docs/**"
   workflow_dispatch:
@@ -39,8 +41,12 @@ jobs:
             scripts/openai_sol_connection_test.py \
             scripts/openai_codex_connection_test.py \
             scripts/collect_qore_state.py \
+            scripts/select_sol_reasoning.py \
+            scripts/evaluate_sol_escalation.py \
             scripts/run_sol_architect.py \
-            scripts/run_codex_engineer_plan.py
+            scripts/run_codex_engineer_plan.py \
+            scripts/build_reviewer_package.py \
+            scripts/dispatch_reviewer_request.py
 
       - name: Parse strict JSON schemas
         run: |
@@ -58,12 +64,22 @@ jobs:
               print(f"schema ok: {path}")
           PY
 
-      - name: Verify permanent role boundaries
+      - name: Run orchestrator regressions
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+
+      - name: Verify permanent role and security boundaries
         run: |
           set -euo pipefail
           grep -F "sole source of truth" charters/SOL-PRINCIPAL-ARCHITECT.md
+          grep -F "Adaptive reasoning policy" charters/SOL-PRINCIPAL-ARCHITECT.md
+          grep -F '`max`' charters/SOL-PRINCIPAL-ARCHITECT.md
           grep -F "You are the Principal Engineer" charters/CODEX-PRINCIPAL-ENGINEER.md
           grep -F "PLAN-ONLY" charters/CODEX-PRINCIPAL-ENGINEER.md
           grep -F "No decision from this architect grants Production authority" charters/SOL-PRINCIPAL-ARCHITECT.md
-          grep -F "permissions:" .github/workflows/qore-architect-readonly.yml
+          grep -F "QORE_REVIEWER_DISPATCH_TOKEN" .github/workflows/qore-architect-readonly.yml
+          grep -F "external_dispatch_mode" .github/workflows/qore-architect-readonly.yml
           grep -F "contents: read" .github/workflows/qore-architect-readonly.yml
+          ! grep -F "CLAUDE_CODE_OAUTH_TOKEN" .github/workflows/qore-architect-readonly.yml
+          ! grep -F "DEEPSEEK_API_KEY" .github/workflows/qore-architect-readonly.yml
