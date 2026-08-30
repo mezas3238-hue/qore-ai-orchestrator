@@ -42,8 +42,12 @@ jobs:
             scripts/openai_codex_connection_test.py \
             scripts/collect_qore_state.py \
             scripts/collect_external_reviewer_state.py \
+            scripts/augment_reviewer_control_plane.py \
             scripts/merge_external_reviewer_state.py \
             scripts/build_model_context.py \
+            scripts/augment_engineer_context.py \
+            scripts/prepare_sol_continuation_context.py \
+            scripts/validate_architect_continuation.py \
             scripts/select_sol_reasoning.py \
             scripts/select_sol_reasoning_v2.py \
             scripts/evaluate_sol_escalation.py \
@@ -75,20 +79,23 @@ jobs:
           set -euo pipefail
           python3 -m unittest discover -s tests -v
 
-      - name: Verify permanent role, cost, and security boundaries
+      - name: Verify permanent role, continuation, cost, and security boundaries
         run: |
           set -euo pipefail
           grep -F "sole source of truth" charters/SOL-PRINCIPAL-ARCHITECT.md
           grep -F "Adaptive reasoning policy" charters/SOL-PRINCIPAL-ARCHITECT.md
           grep -F "Reviewer return state and adjudication" charters/SOL-PRINCIPAL-ARCHITECT.md
+          grep -F "WAITING_AGENT" charters/SOL-PRINCIPAL-ARCHITECT.md
+          grep -F "NO_ACTION is not an allowed architect status" charters/SOL-PRINCIPAL-ARCHITECT.md
           grep -F '`max`' charters/SOL-PRINCIPAL-ARCHITECT.md
           grep -F "You are the Principal Engineer" charters/CODEX-PRINCIPAL-ENGINEER.md
           grep -F "PLAN-ONLY" charters/CODEX-PRINCIPAL-ENGINEER.md
           grep -F "No decision from this architect grants Production authority" charters/SOL-PRINCIPAL-ARCHITECT.md
           grep -F "QORE_REVIEWER_DISPATCH_TOKEN" .github/workflows/qore-architect-readonly.yml
           grep -F "external_dispatch_mode" .github/workflows/qore-architect-readonly.yml
-          grep -F "collect_external_reviewer_state.py" .github/workflows/qore-architect-readonly.yml
-          grep -F "build_model_context.py" .github/workflows/qore-architect-readonly.yml
+          grep -F "augment_reviewer_control_plane.py" .github/workflows/qore-architect-readonly.yml
+          grep -F "validate_architect_continuation.py" .github/workflows/qore-architect-readonly.yml
+          grep -F "prepare_sol_continuation_context.py" .github/workflows/qore-architect-readonly.yml
           grep -F "qore-model-context.json" .github/workflows/qore-architect-readonly.yml
           grep -F "prompt_cache_key" scripts/run_sol_architect_v2.py
           grep -F "contents: read" .github/workflows/qore-architect-readonly.yml
