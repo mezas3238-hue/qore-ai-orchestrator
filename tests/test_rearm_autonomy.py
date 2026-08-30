@@ -165,19 +165,45 @@ class RearmAutonomyTests(unittest.TestCase):
                 child_architect_run_id=2,
             )
 
-    def test_source_run_must_be_exact_completion_gate(self):
+    def test_source_run_binds_to_stable_completion_workflow_path_not_dynamic_name(self):
         run = {
             "id": 99,
-            "name": rearm.RESUME_WORKFLOW_NAME,
+            "name": "Resume gate · repository_dispatch · 12345",
+            "path": rearm.RESUME_WORKFLOW_PATH,
             "event": "repository_dispatch",
             "status": "completed",
+            "conclusion": "success",
             "head_branch": "main",
             "head_sha": "a" * 40,
         }
         rearm.validate_resume_run(run, 99)
-        run["name"] = "Other workflow"
+        run["name"] = "Any dynamic run-name remains non-authoritative"
+        rearm.validate_resume_run(run, 99)
+        run["path"] = ".github/workflows/other.yml"
         with self.assertRaisesRegex(rearm.RearmError, "completion resume gate"):
             rearm.validate_resume_run(run, 99)
+
+    def test_source_run_requires_successful_terminal_main_origin(self):
+        run = {
+            "id": 99,
+            "name": "Resume gate · repository_dispatch · 12345",
+            "path": rearm.RESUME_WORKFLOW_PATH,
+            "event": "repository_dispatch",
+            "status": "completed",
+            "conclusion": "success",
+            "head_branch": "main",
+            "head_sha": "a" * 40,
+        }
+        for key, value in (
+            ("event", "push"),
+            ("status", "in_progress"),
+            ("conclusion", "failure"),
+            ("head_branch", "feature"),
+        ):
+            candidate = dict(run)
+            candidate[key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(rearm.RearmError):
+                rearm.validate_resume_run(candidate, 99)
 
 
 if __name__ == "__main__":
