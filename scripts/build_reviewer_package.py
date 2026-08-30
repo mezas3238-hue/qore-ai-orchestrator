@@ -23,6 +23,7 @@ QORE_CI_WORKFLOW_PATH = ".github/workflows/ci.yml"
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 TIMESTAMP_RE = re.compile(r"^\ufeff?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z ")
+DEEPSEEK_MARKER_RE = re.compile(r"<!-- QORE-DEEPSEEK-REVIEW package=(?P<package>[^ ]+) head=(?P<head>[0-9a-f]{40}) -->")
 
 
 class PackageError(RuntimeError):
@@ -241,6 +242,29 @@ def resolve_quality(head: str, synthetic: str) -> QualitySummary:
     return parse_quality_log(log_text, synthetic, run_id, job_id)
 
 
+def has_exact_deepseek_expert(snapshot: dict[str, Any], pr_number: int, head: str) -> bool:
+    for pr in snapshot.get("open_pull_requests", []):
+        if not isinstance(pr, dict) or pr.get("number") != pr_number:
+            continue
+        for review in pr.get("reviews", []):
+            if not isinstance(review, dict) or review.get("commit_id") != head:
+                continue
+            body = str(review.get("body") or "")
+            for match in DEEPSEEK_MARKER_RE.finditer(body):
+                package = match.group("package")
+                if match.group("head") == head and "DS-EXPERT" in package:
+                    return True
+        for comment in pr.get("conversation_comments", []):
+            if not isinstance(comment, dict):
+                continue
+            body = str(comment.get("body") or "")
+            for match in DEEPSEEK_MARKER_RE.finditer(body):
+                package = match.group("package")
+                if match.group("head") == head and "DS-EXPERT" in package:
+                    return True
+    return False
+
+
 def build_prompt(
     *,
     decision: dict[str, Any],
@@ -268,7 +292,7 @@ def build_prompt(
         "## Authoritative Quality Gate",
         f"- run: `{qg.run_id}`",
         f"- job: `{qg.job_id}`",
-        f"- Ruff: PASS",
+        "- Ruff: PASS",
         f"- Mypy: {qg.mypy_source_files} source files",
         f"- Pytest: {qg.pytest_collected} collected / {qg.pytest_passed} passed / {qg.pytest_warnings} warnings",
         f"- Coverage: {qg.coverage_total_statements} statements / {qg.coverage_missed_statements} missed / {qg.coverage_percent}%",
@@ -323,6 +347,7 @@ def build_prompt(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--decision", required=True)
+    parser.add_argument("--snapshot", required=True)
     parser.add_argument("--orchestrator-run-id", required=True)
     parser.add_argument("--prompt-output", required=True)
     parser.add_argument("--request-output", required=True)
@@ -330,6 +355,10 @@ def main() -> int:
     args = parser.parse_args()
 
     decision = json.loads(Path(args.decision).read_text(encoding="utf-8"))
+    snapshot = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
+    if decision.get("source_main_sha") != snapshot.get("main_sha"):
+        raise SystemExit("Architect decision and snapshot main SHA do not match")
+
     contract = decision.get("review_contract")
     actor = decision.get("next_actor")
     if actor not in {"CLAUDE_CODE", "DEEPSEEK"} or not isinstance(contract, dict) or contract.get("enabled") is not True:
@@ -360,6 +389,8 @@ def main() -> int:
             suffix = "EXPERT"
             review_mode = "expert"
         elif kind == "DEEPSEEK_CODER":
+            if not has_exact_deepseek_expert(snapshot, pr_number, head):
+                raise SystemExit("REVIEW_PACKAGE_BLOCKED: DeepSeek Coder requires exact-head Expert evidence first")
             suffix = "CODER"
             review_mode = "coder"
         else:
