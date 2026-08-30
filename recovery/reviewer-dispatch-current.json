@@ -2,5 +2,5 @@
   "schema_version": "qore.reviewer.dispatch.recovery.request.v1",
   "source_architect_run_id": 33330339041,
   "expected_source_head_sha": "6ee9292198fe392b5aca33e551a0377145f908e2",
-  "reason": "Retry the exact REVIEW_TASK from Autonomous V2 run 33330339041 once after recovery run 33331547182 failed before reviewer package generation because the bridge credential was rejected only by the public qore-core job-log endpoint. Public-log transport is now attested and unauthenticated for that endpoint only."
+  "reason": "Final bounded recovery of the exact REVIEW_TASK from Autonomous V2 run 33330339041. Prior recoveries 33331547182 and 33332859040 both failed before reviewer package/dispatch creation while testing authenticated and public job-log transport. This final attempt eliminates log transport entirely: it reuses the exact R94 QG summary frozen in the immutable source snapshot only after matching PR/BASE/HEAD/SYNTHETIC and revalidating the referenced QORE CI run/job live as completed SUCCESS."
 }
