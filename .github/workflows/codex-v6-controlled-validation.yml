@@ -67,6 +67,13 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Verify model has no GitHub credential surface
+        run: |
+          set -euo pipefail
+          test "$(git -C workspace/qore-core remote get-url origin)" = "https://github.com/mezas3238-hue/qore-core"
+          test -z "$(git -C workspace/qore-core config --local --get-all http.https://github.com/.extraheader || true)"
+          test -z "$(git -C workspace/qore-core config --local --get core.sshCommand || true)"
+
       - name: Execute bounded V6 validation
         env:
           OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
@@ -87,7 +94,6 @@ jobs:
           jq -e '.production_authority == false' artifacts/codex-worker-usage.json >/dev/null
           jq -e '.model_calls >= 1 and .model_calls <= 2' artifacts/codex-worker-usage.json >/dev/null
           jq -e '.hidden_retries == 0' artifacts/codex-worker-usage.json >/dev/null
-          test -z "$(git -C workspace/qore-core remote -v | grep -E 'push|x-access-token' || true)"
 
       - name: Upload controlled validation evidence
         if: ${{ always() }}
