@@ -1,0 +1,97 @@
+name: Sol V3 controlled validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      packet_json:
+        description: Exact qore.sol.decision.packet.v2 JSON
+        required: true
+        type: string
+      stable_prefix_json:
+        description: Exact qore.stable.prompt.prefix.v1 JSON
+        required: true
+        type: string
+      reasoning_effort:
+        description: Bounded Sol reasoning effort
+        required: true
+        type: choice
+        options: [medium, high, xhigh, max]
+        default: high
+      confirm_api_spend:
+        description: Explicitly authorize this single controlled API validation
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: ${{ inputs.confirm_api_spend == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require merged main implementation
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+
+      - name: Checkout orchestrator
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Materialize exact packet and stable prefix
+        env:
+          PACKET_JSON: ${{ inputs.packet_json }}
+          PREFIX_JSON: ${{ inputs.stable_prefix_json }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          packet = json.loads(os.environ["PACKET_JSON"])
+          prefix = json.loads(os.environ["PREFIX_JSON"])
+          if packet.get("schema_version") != "qore.sol.decision.packet.v2" or packet.get("production_authority") is not False:
+              raise SystemExit("invalid compact packet")
+          if prefix.get("schema_version") != "qore.stable.prompt.prefix.v1" or prefix.get("production_authority") is not False:
+              raise SystemExit("invalid stable prefix")
+          Path("artifacts/sol-decision-packet.json").write_text(json.dumps(packet, indent=2, sort_keys=True) + "\n")
+          Path("artifacts/sol-stable-prefix.json").write_text(json.dumps(prefix, indent=2, sort_keys=True) + "\n")
+          PY
+
+      - name: Execute one-call Sol V3 validation
+        env:
+          OPENAI_SOL_API_KEY: ${{ secrets.OPENAI_SOL_API_KEY }}
+          QORE_SOL_V3_MODE: CONTROLLED_VALIDATION
+          SOL_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
+          SOL_MAX_OUTPUT_TOKENS: "8000"
+        run: |
+          set -euo pipefail
+          python3 scripts/run_sol_architect_v3.py \
+            --packet artifacts/sol-decision-packet.json \
+            --stable-prefix artifacts/sol-stable-prefix.json \
+            --charter charters/SOL-PRINCIPAL-ARCHITECT.md \
+            --schema schemas/architect_decision.schema.json \
+            --output artifacts/architect-decision.json \
+            --usage-output artifacts/sol-usage.json
+
+      - name: Assert controlled validation boundaries
+        run: |
+          set -euo pipefail
+          jq -e '.production_authority == false' artifacts/architect-decision.json >/dev/null
+          jq -e '.production_authority == false' artifacts/sol-usage.json >/dev/null
+          jq -e '.model_calls == 1' artifacts/sol-usage.json >/dev/null
+          jq -e '.packet_chars <= 60000' artifacts/sol-usage.json >/dev/null
+          jq -e '.stable_prefix_chars <= 90000' artifacts/sol-usage.json >/dev/null
+
+      - name: Upload controlled validation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-sol-v3-validation-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30
