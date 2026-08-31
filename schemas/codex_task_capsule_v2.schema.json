@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "qore.codex.task.capsule.v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "work_unit_id", "work_unit", "reference_sha", "reference_materialized", "prior_candidate", "changed_file_allowlist", "forbidden_files", "contract", "findings", "acceptance_tests", "source_slices", "relevant_tests", "historical_delta", "missing_evidence_protocol", "worker_instruction", "production_authority", "packet_sha256", "packet_id"],
+  "properties": {
+    "schema_version": {"const": "qore.codex.task.capsule.v2"},
+    "work_unit_id": {"type": "string", "pattern": "^QORE-WORK-[0-9a-f]{24}$"},
+    "work_unit": {"type": "object"},
+    "reference_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+    "reference_materialized": {"type": "boolean"},
+    "prior_candidate": {"type": ["object", "null"]},
+    "changed_file_allowlist": {"type": "array", "items": {"type": "string"}},
+    "forbidden_files": {"type": "array", "items": {"type": "string"}},
+    "contract": {"type": "object"},
+    "findings": {"type": "array", "items": {"type": "object"}},
+    "acceptance_tests": {"type": "array", "items": {"type": "string"}},
+    "source_slices": {"type": "array", "items": {"type": "object"}},
+    "relevant_tests": {"type": "array", "items": {"type": "string"}},
+    "historical_delta": {"type": "object"},
+    "missing_evidence_protocol": {"const": "NEED_EVIDENCE(symbol/file/test)"},
+    "worker_instruction": {"type": "string", "minLength": 1},
+    "production_authority": {"const": false},
+    "packet_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "packet_id": {"type": "string", "pattern": "^QORE-CODEX-CAPS2-[0-9a-f]{24}$"}
+  }
+}
