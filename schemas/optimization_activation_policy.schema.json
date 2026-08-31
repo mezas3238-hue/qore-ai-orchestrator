@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "const": "qore.optimization.activation.policy.v1"},
+    "mode": {"type": "string", "enum": ["SHADOW", "LIMITED_LIVE"]},
+    "compact_sol_context_live": {"type": "boolean"},
+    "codex_task_capsule_live": {"type": "boolean"},
+    "clean_pass_auto_advance_live": {"type": "boolean"},
+    "fable_incremental_audit_live": {"type": "boolean", "const": false},
+    "batch_review_live": {"type": "boolean", "const": false},
+    "reviewer_suppression_live": {"type": "boolean", "const": false},
+    "mandatory_review_chain": {
+      "type": "array",
+      "prefixItems": [
+        {"const": "QG"}, {"const": "DEEPSEEK_EXPERT"}, {"const": "DEEPSEEK_CODER"}, {"const": "CLAUDE"}, {"const": "SOL_FINAL"}
+      ],
+      "minItems": 5,
+      "maxItems": 5
+    },
+    "final_sol_required": {"type": "boolean", "const": true},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "production_authority": {"type": "boolean", "const": false}
+  },
+  "required": ["schema_version", "mode", "compact_sol_context_live", "codex_task_capsule_live", "clean_pass_auto_advance_live", "fable_incremental_audit_live", "batch_review_live", "reviewer_suppression_live", "mandatory_review_chain", "final_sol_required", "blockers", "production_authority"]
+}
