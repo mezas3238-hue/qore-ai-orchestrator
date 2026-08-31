@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "const": "qore.economic.recertification.v1"},
+    "passed": {"type": "boolean"},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "savings_usd": {"type": "number"},
+    "savings_ratio": {"type": "number"},
+    "reviewer_policy": {"type": "string", "const": "QG->DEEPSEEK_EXPERT->DEEPSEEK_CODER->CLAUDE->SOL_FINAL"},
+    "production_authority": {"type": "boolean", "const": false}
+  },
+  "required": ["schema_version", "passed", "blockers", "savings_usd", "savings_ratio", "reviewer_policy", "production_authority"]
+}
