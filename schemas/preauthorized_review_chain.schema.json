@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "const": "qore.preauthorized.review.chain.v1"},
+    "candidate_id": {"type": ["string", "null"]},
+    "candidate": {"type": "object"},
+    "source_architect_run_id": {"type": "integer", "minimum": 1},
+    "engineering_contract": {"type": "object"},
+    "stages": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "stage": {"type": "string", "enum": ["DEEPSEEK_EXPERT", "DEEPSEEK_CODER", "CLAUDE", "SOL_FINAL"]},
+          "actor": {"type": "string", "enum": ["DEEPSEEK", "CLAUDE_CODE", "SOL"]},
+          "review_kind": {"type": "string"},
+          "package_id": {"type": ["string", "null"]}
+        },
+        "required": ["stage", "actor", "review_kind", "package_id"]
+      }
+    },
+    "advance_rule": {"type": "string"},
+    "invalidate_rule": {"type": "string"},
+    "finding_rule": {"type": "string"},
+    "final_sol_required": {"type": "boolean", "const": true},
+    "reviewer_suppression": {"type": "boolean", "const": false},
+    "production_authority": {"type": "boolean", "const": false},
+    "chain_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "chain_id": {"type": "string", "pattern": "^QORE-REVIEW-CHAIN-[0-9a-f]{24}$"}
+  },
+  "required": ["schema_version", "candidate_id", "candidate", "source_architect_run_id", "engineering_contract", "stages", "advance_rule", "invalidate_rule", "finding_rule", "final_sol_required", "reviewer_suppression", "production_authority", "chain_sha256", "chain_id"]
+}
