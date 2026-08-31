@@ -1,0 +1,105 @@
+name: Codex V6 controlled validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_json:
+        description: Exact qore.codex.engineering.request.v1 JSON
+        required: true
+        type: string
+      confirm_api_spend:
+        description: Explicitly authorize this single controlled API validation
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: ${{ inputs.confirm_api_spend == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Require merged main implementation
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+
+      - name: Checkout orchestrator
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Materialize and validate exact request
+        id: request
+        env:
+          REQUEST_JSON: ${{ inputs.request_json }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          value = json.loads(os.environ["REQUEST_JSON"])
+          if value.get("schema_version") != "qore.codex.engineering.request.v1":
+              raise SystemExit("unexpected request schema")
+          if value.get("production_authority") is not False:
+              raise SystemExit("Production authority forbidden")
+          source = value.get("source_main_sha")
+          if not isinstance(source, str) or re.fullmatch(r"[0-9a-f]{40}", source) is None:
+              raise SystemExit("invalid source SHA")
+          contract = value.get("engineering_contract")
+          if not isinstance(contract, dict) or contract.get("target_repository") != "mezas3238-hue/qore-core":
+              raise SystemExit("controlled V6 target must be qore-core")
+          Path("artifacts/codex-request.json").write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as handle:
+              handle.write(f"source={source}\n")
+          PY
+
+      - name: Checkout exact qore-core source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: mezas3238-hue/qore-core
+          ref: ${{ steps.request.outputs.source }}
+          path: workspace/qore-core
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify model has no GitHub credential surface
+        run: |
+          set -euo pipefail
+          test "$(git -C workspace/qore-core remote get-url origin)" = "https://github.com/mezas3238-hue/qore-core"
+          test -z "$(git -C workspace/qore-core config --local --get-all http.https://github.com/.extraheader || true)"
+          test -z "$(git -C workspace/qore-core config --local --get core.sshCommand || true)"
+
+      - name: Execute bounded V6 validation
+        env:
+          OPENAI_CODEX_API_KEY: ${{ secrets.OPENAI_CODEX_API_KEY }}
+          QORE_CODEX_V6_MODE: CONTROLLED_VALIDATION
+        run: |
+          set -euo pipefail
+          python3 scripts/run_codex_engineer_worker_v6_hardened.py \
+            --repo-dir workspace/qore-core \
+            --request artifacts/codex-request.json \
+            --charter charters/CODEX-PRINCIPAL-ENGINEER.md \
+            --output artifacts/codex-worker-result.json \
+            --usage-output artifacts/codex-worker-usage.json
+
+      - name: Assert controlled validation boundaries
+        run: |
+          set -euo pipefail
+          jq -e '.production_authority == false' artifacts/codex-worker-result.json >/dev/null
+          jq -e '.production_authority == false' artifacts/codex-worker-usage.json >/dev/null
+          jq -e '.model_calls >= 1 and .model_calls <= 2' artifacts/codex-worker-usage.json >/dev/null
+          jq -e '.hidden_retries == 0' artifacts/codex-worker-usage.json >/dev/null
+
+      - name: Upload controlled validation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-codex-v6-validation-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30

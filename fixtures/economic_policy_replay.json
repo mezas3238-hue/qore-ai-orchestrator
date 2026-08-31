@@ -1,0 +1,94 @@
+[
+  {
+    "case_id": "tier0-doc-only",
+    "snapshot": {
+      "candidate": {"repository": "qore/core", "base_sha": "0000000000000000000000000000000000000001", "head_sha": "0000000000000000000000000000000000000002", "tree_sha": "0000000000000000000000000000000000000003", "synthetic_sha": "0000000000000000000000000000000000000004", "production_authority": false},
+      "changed_files": ["docs/architecture/note.md"],
+      "semantic_change": false,
+      "release_or_production_sensitive": false,
+      "cost_events": [],
+      "price_cards": {},
+      "contexts": {"a": "stable"}
+    },
+    "expected": {"risk_tier": 0, "review_stages": ["QG", "DEEPSEEK_EXPERT", "DEEPSEEK_CODER", "CLAUDE", "SOL_FINAL"], "fable_mode": null, "production_authority": false}
+  },
+  {
+    "case_id": "tier1-local-implementation",
+    "snapshot": {
+      "candidate": {"repository": "qore/core", "base_sha": "1000000000000000000000000000000000000001", "head_sha": "1000000000000000000000000000000000000002", "tree_sha": "1000000000000000000000000000000000000003", "synthetic_sha": "1000000000000000000000000000000000000004", "production_authority": false},
+      "changed_files": ["src/qore/local_helper.py"],
+      "semantic_change": false,
+      "release_or_production_sensitive": false,
+      "cost_events": [],
+      "price_cards": {},
+      "contexts": {"a": "stable"}
+    },
+    "expected": {"risk_tier": 1, "review_stages": ["QG", "DEEPSEEK_EXPERT", "DEEPSEEK_CODER", "CLAUDE", "SOL_FINAL"], "fable_mode": null, "production_authority": false}
+  },
+  {
+    "case_id": "tier2-semantic-contract",
+    "snapshot": {
+      "candidate": {"repository": "qore/core", "base_sha": "2000000000000000000000000000000000000001", "head_sha": "2000000000000000000000000000000000000002", "tree_sha": "2000000000000000000000000000000000000003", "synthetic_sha": "2000000000000000000000000000000000000004", "production_authority": false},
+      "changed_files": ["src/qore/domain/product_contract.py"],
+      "semantic_change": true,
+      "release_or_production_sensitive": false,
+      "cost_events": [],
+      "price_cards": {},
+      "contexts": {"a": "stable"},
+      "fable": {
+        "milestone_freeze": false,
+        "release_recertification": false,
+        "security_or_governance_change": false,
+        "cross_boundary_change": false,
+        "token_plan": {"stable_tokens": 1000, "changed_tokens": 500, "cross_boundary_tokens": 0, "expected_output_tokens": 100, "cache_hit_ratio": 1.0, "batch_discount": 0.0},
+        "price_card": {"input_per_million": 1.0, "cached_input_per_million": 0.1, "cache_write_per_million": 1.25, "output_per_million": 2.0},
+        "hard_budget_usd": 1.0
+      }
+    },
+    "expected": {"risk_tier": 2, "review_stages": ["QG", "DEEPSEEK_EXPERT", "DEEPSEEK_CODER", "CLAUDE", "SOL_FINAL"], "fable_mode": "DELTA", "production_authority": false}
+  },
+  {
+    "case_id": "tier3-governance-cross-boundary",
+    "snapshot": {
+      "candidate": {"repository": "qore/core", "base_sha": "3000000000000000000000000000000000000001", "head_sha": "3000000000000000000000000000000000000002", "tree_sha": "3000000000000000000000000000000000000003", "synthetic_sha": "3000000000000000000000000000000000000004", "production_authority": false},
+      "changed_files": ["src/qore/governance/executive_authority.py"],
+      "semantic_change": true,
+      "release_or_production_sensitive": false,
+      "cost_events": [],
+      "price_cards": {},
+      "contexts": {"a": "stable"},
+      "fable": {
+        "milestone_freeze": false,
+        "release_recertification": false,
+        "security_or_governance_change": true,
+        "cross_boundary_change": true,
+        "token_plan": {"stable_tokens": 1000, "changed_tokens": 500, "cross_boundary_tokens": 500, "expected_output_tokens": 100, "cache_hit_ratio": 1.0, "batch_discount": 0.0},
+        "price_card": {"input_per_million": 1.0, "cached_input_per_million": 0.1, "cache_write_per_million": 1.25, "output_per_million": 2.0},
+        "hard_budget_usd": 1.0
+      }
+    },
+    "expected": {"risk_tier": 3, "review_stages": ["QG", "DEEPSEEK_EXPERT", "DEEPSEEK_CODER", "CLAUDE", "SOL_FINAL"], "fable_mode": "CROSS_BOUNDARY", "production_authority": false}
+  },
+  {
+    "case_id": "tier4-release-recertification",
+    "snapshot": {
+      "candidate": {"repository": "qore/core", "base_sha": "4000000000000000000000000000000000000001", "head_sha": "4000000000000000000000000000000000000002", "tree_sha": "4000000000000000000000000000000000000003", "synthetic_sha": "4000000000000000000000000000000000000004", "production_authority": false},
+      "changed_files": ["src/qore/release/readiness.py"],
+      "semantic_change": true,
+      "release_or_production_sensitive": true,
+      "cost_events": [],
+      "price_cards": {},
+      "contexts": {"a": "stable"},
+      "fable": {
+        "milestone_freeze": true,
+        "release_recertification": true,
+        "security_or_governance_change": false,
+        "cross_boundary_change": false,
+        "token_plan": {"stable_tokens": 1000, "changed_tokens": 500, "cross_boundary_tokens": 500, "expected_output_tokens": 100, "cache_hit_ratio": 1.0, "batch_discount": 0.0},
+        "price_card": {"input_per_million": 1.0, "cached_input_per_million": 0.1, "cache_write_per_million": 1.25, "output_per_million": 2.0},
+        "hard_budget_usd": 1.0
+      }
+    },
+    "expected": {"risk_tier": 4, "review_stages": ["QG", "DEEPSEEK_EXPERT", "DEEPSEEK_CODER", "CLAUDE", "SOL_FINAL"], "fable_mode": "FULL_SYSTEM", "production_authority": false}
+  }
+]

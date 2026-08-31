@@ -1,0 +1,23 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "const": "qore.codex.completion.event.v1"},
+    "work_unit_id": {"type": "string"},
+    "source_main_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "contract_id": {"type": "string"},
+    "status": {"type": "string", "enum": ["READY", "BLOCKED"]},
+    "summary": {"type": ["string", "null"]},
+    "changed_files": {"type": "array", "items": {"type": "string"}},
+    "diff_sha256": {"type": ["string", "null"]},
+    "quality_gate_runs": {"type": "integer", "minimum": 0},
+    "quality_gate_success": {"type": "boolean"},
+    "turns": {"type": "integer", "minimum": 0},
+    "usage_summary": {"type": ["object", "null"]},
+    "candidate_published": {"type": "boolean"},
+    "production_authority": {"type": "boolean", "const": false},
+    "event_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "event_id": {"type": "string", "pattern": "^QORE-CODEX-EVENT-[0-9a-f]{24}$"}
+  },
+  "required": ["schema_version", "work_unit_id", "source_main_sha", "contract_id", "status", "summary", "changed_files", "diff_sha256", "quality_gate_runs", "quality_gate_success", "turns", "usage_summary", "candidate_published", "production_authority", "event_sha256", "event_id"]
+}

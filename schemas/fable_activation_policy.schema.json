@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"type": "string", "const": "qore.fable.activation.policy.v1"},
+    "mode": {"type": "string", "enum": ["SHADOW", "LIMITED_LIVE"]},
+    "delta_live": {"type": "boolean"},
+    "cross_boundary_live": {"type": "boolean"},
+    "full_system_live": {"type": "boolean"},
+    "hard_cost_preflight_required": {"type": "boolean", "const": true},
+    "findings_compaction_required": {"type": "boolean", "const": true},
+    "reviewer_substitution": {"type": "boolean", "const": false},
+    "blockers": {"type": "array", "items": {"type": "string"}},
+    "production_authority": {"type": "boolean", "const": false}
+  },
+  "required": ["schema_version", "mode", "delta_live", "cross_boundary_live", "full_system_live", "hard_cost_preflight_required", "findings_compaction_required", "reviewer_substitution", "blockers", "production_authority"]
+}
