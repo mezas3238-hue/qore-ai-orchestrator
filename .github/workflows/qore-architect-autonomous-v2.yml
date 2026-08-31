@@ -90,6 +90,8 @@ jobs:
           echo "QORE main: $(git -C workspace/qore-core rev-parse HEAD)"
 
       - name: Build canonical QORE state snapshot
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           python3 scripts/collect_qore_state.py \

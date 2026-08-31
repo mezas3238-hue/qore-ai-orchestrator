@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import urllib.error
 import urllib.parse
@@ -29,11 +30,23 @@ def git(root: Path, *args: str) -> str:
     ).strip()
 
 
+def github_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": USER_AGENT,
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def api_json(path: str, params: dict[str, str] | None, errors: list[str]) -> Any:
     query = "" if not params else "?" + urllib.parse.urlencode(params)
     request = urllib.request.Request(
         API + path + query,
-        headers={"Accept": "application/vnd.github+json", "User-Agent": USER_AGENT},
+        headers=github_headers(),
     )
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
