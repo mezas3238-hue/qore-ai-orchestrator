@@ -35,6 +35,7 @@ MATERIALIZATION_MARKERS = (
     "materialize exact",
     "materialise exact",
     "corrected descendant of",
+    "as the implementation reference",
     "checking out exact",
     "check out exact",
     "checkout exact",
