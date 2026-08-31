@@ -1,0 +1,83 @@
+name: QORE economic shadow observer
+run-name: Economic shadow · ${{ github.event_name }} · ${{ github.event.workflow_run.id || github.event.client_payload.workflow_run_id || github.run_id }}
+
+on:
+  workflow_run:
+    workflows:
+      - QORE Codex engineer worker
+    types:
+      - completed
+  repository_dispatch:
+    types:
+      - qore_agent_completion_v1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: qore-economic-shadow-observer-${{ github.event.workflow_run.id || github.event.client_payload.workflow_run_id || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Enforce trusted default-branch observer
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          echo "Economic observer executes from orchestrator main and has no write permission."
+
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Observe completion without model calls
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          QORE_REVIEWER_DISPATCH_TOKEN: ${{ secrets.QORE_REVIEWER_DISPATCH_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          python3 scripts/observe_completion_shadow.py \
+            --event "$GITHUB_EVENT_PATH" \
+            --output artifacts/qore-economic-shadow-observation.json
+
+      - name: Assert zero-spend and zero-authority contract
+        run: |
+          set -euo pipefail
+          jq -e '.shadow_only == true' artifacts/qore-economic-shadow-observation.json >/dev/null
+          jq -e '.would_spend_api == false' artifacts/qore-economic-shadow-observation.json >/dev/null
+          jq -e '.production_authority == false' artifacts/qore-economic-shadow-observation.json >/dev/null
+          if jq -e '.would_dispatch == true' artifacts/qore-economic-shadow-observation.json >/dev/null; then
+            echo "Shadow observer must never dispatch." >&2
+            exit 32
+          fi
+
+      - name: Publish economic shadow summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "# QORE economic shadow observation"
+            echo "No model/API dispatch is performed by this workflow."
+            if [[ -f artifacts/qore-economic-shadow-observation.json ]]; then
+              echo '```json'
+              cat artifacts/qore-economic-shadow-observation.json
+              echo '```'
+            else
+              echo "No observation was produced; observer failed closed."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload immutable shadow evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qore-economic-shadow-${{ github.run_id }}
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 30
