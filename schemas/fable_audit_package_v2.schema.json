@@ -1,0 +1,14 @@
+{
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {"type": "string", "const": "qore.fable.audit.package.v2"},
+    "execution_mode": {"type": "string", "enum": ["SHADOW", "CONTROLLED_VALIDATION", "LIMITED_LIVE"]},
+    "cost_preflight": {"type": "object"},
+    "reviewer_substitution": {"type": "boolean", "const": false},
+    "production_authority": {"type": "boolean", "const": false},
+    "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "package_id": {"type": "string", "pattern": "^QORE-FABLE-AUDIT-V2-[0-9a-f]{24}$"}
+  },
+  "required": ["schema_version", "execution_mode", "cost_preflight", "reviewer_substitution", "production_authority", "package_sha256", "package_id"]
+}
