@@ -1,0 +1,97 @@
+name: Economic control static checks
+
+on:
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "tests/**"
+      - "schemas/**"
+      - "docs/architecture/DETERMINISTIC-FIRST-AI-COST-CONTROL-058.md"
+      - ".github/workflows/economic-control-static-checks.yml"
+      - ".github/workflows/qore-economic-shadow-observer.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "scripts/**"
+      - "tests/**"
+      - "schemas/**"
+      - "docs/architecture/DETERMINISTIC-FIRST-AI-COST-CONTROL-058.md"
+      - ".github/workflows/economic-control-static-checks.yml"
+      - ".github/workflows/qore-economic-shadow-observer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-economic-control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Compile every Python control-plane module
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import py_compile
+          from pathlib import Path
+
+          paths = sorted(Path("scripts").glob("*.py")) + sorted(Path("tests").glob("test_*.py"))
+          if not paths:
+              raise SystemExit("no Python modules discovered")
+          for path in paths:
+              py_compile.compile(str(path), doraise=True)
+          print(f"compiled={len(paths)}")
+          PY
+
+      - name: Parse every strict JSON schema
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          for path in sorted(Path("schemas").glob("*.json")):
+              value = json.loads(path.read_text(encoding="utf-8"))
+              assert value.get("type") == "object", path
+              assert value.get("additionalProperties") is False, path
+              print(f"strict_schema={path}")
+          PY
+
+      - name: Run complete orchestrator regression suite
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tests -v
+
+      - name: Verify deterministic-first safety invariants
+        run: |
+          set -euo pipefail
+          grep -F 'reviewer_suppression_live=False' scripts/optimization_activation_policy.py
+          grep -F 'fable_incremental_audit_live=False' scripts/optimization_activation_policy.py
+          grep -F 'batch_review_live=False' scripts/optimization_activation_policy.py
+          grep -F '"QG",' scripts/optimization_activation_policy.py
+          grep -F '"DEEPSEEK_EXPERT",' scripts/optimization_activation_policy.py
+          grep -F '"DEEPSEEK_CODER",' scripts/optimization_activation_policy.py
+          grep -F '"CLAUDE",' scripts/optimization_activation_policy.py
+          grep -F '"SOL_FINAL",' scripts/optimization_activation_policy.py
+          grep -F 'MAX_MODEL_CALLS = 2' scripts/run_codex_engineer_worker_v6.py
+          grep -F 'No hidden retry or third model call is permitted.' scripts/run_codex_engineer_worker_v6.py
+          grep -F 'ALLOWED_ACTIVATION_MODES = {"CONTROLLED_VALIDATION", "LIMITED_LIVE"}' scripts/run_sol_architect_v3.py
+          grep -F 'would_spend_api == false' .github/workflows/qore-economic-shadow-observer.yml
+          grep -F 'contents: read' .github/workflows/qore-economic-shadow-observer.yml
+          grep -F 'production_authority' scripts/build_preauthorized_review_chain.py
+          if grep -R --line-number -E 'reviewer_suppression_live=True|production_authority[" ]*:[ ]*true' scripts tests schemas; then
+            echo "Forbidden authority/suppression literal found." >&2
+            exit 1
+          fi
+
+      - name: Verify observer has no write permissions or model secrets
+        run: |
+          set -euo pipefail
+          ! grep -E 'contents: write|actions: write|OPENAI_.*API_KEY|DEEPSEEK_API_KEY|CLAUDE.*TOKEN|FABLE.*KEY' .github/workflows/qore-economic-shadow-observer.yml
+          echo "shadow observer is read-only and model-secret-free"
