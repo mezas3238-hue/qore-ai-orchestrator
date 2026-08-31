@@ -185,11 +185,12 @@ class CodexWorkerV4Tests(unittest.TestCase):
             self.assertNotIn("diff", value["materialization_evidence"])
             self.assertNotIn("content", value["materialization_evidence"])
 
-    def test_live_workflow_routes_to_v4(self) -> None:
+    def test_v4_runtime_remains_available_while_live_workflow_advances(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "codex-engineer-worker.yml").read_text(encoding="utf-8")
-        self.assertIn("Run bounded GPT-5.3-Codex engineering worker V4", workflow)
-        self.assertIn("python3 scripts/run_codex_engineer_worker_v4.py", workflow)
-        self.assertNotIn("python3 scripts/run_codex_engineer_worker_v3.py", workflow)
+        self.assertIn("Run bounded GPT-5.3-Codex engineering worker V5", workflow)
+        self.assertIn("python3 scripts/run_codex_engineer_worker_v5.py", workflow)
+        self.assertNotIn("python3 scripts/run_codex_engineer_worker_v4.py", workflow)
+        self.assertTrue((ROOT / "scripts" / "run_codex_engineer_worker_v4.py").is_file())
 
 
 if __name__ == "__main__":
