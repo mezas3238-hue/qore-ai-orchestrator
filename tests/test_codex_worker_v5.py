@@ -84,7 +84,7 @@ class CodexWorkerV5Tests(unittest.TestCase):
         self.assertEqual(v5.MAX_TURNS, 16)
         self.assertEqual(v5.MAX_TOTAL_TOKENS, 120_000)
         self.assertEqual(v5.PROMPT_CACHE_KEY, "qore-codex-engineer-worker-v4")
-        self.assertIn("no additional model", v5.__doc__.casefold())
+        self.assertIn("zero additional model", v5.__doc__.casefold())
 
     def test_budget_edge_after_successful_patch_can_be_controller_ready(self) -> None:
         temp, repo, source = make_repo()
