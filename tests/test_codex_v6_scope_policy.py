@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,13 @@ class CodexV6ScopePolicyTests(unittest.TestCase):
             "forbidden": ["do not edit docs/security.md"],
         }
 
+    def init_repo(self, root: Path) -> None:
+        subprocess.check_call(["git", "init", "-q"], cwd=root)
+        subprocess.check_call(["git", "config", "user.email", "qore@example.invalid"], cwd=root)
+        subprocess.check_call(["git", "config", "user.name", "QORE Test"], cwd=root)
+        subprocess.check_call(["git", "add", "."], cwd=root)
+        subprocess.check_call(["git", "commit", "-q", "-m", "base"], cwd=root)
+
     def test_tests_named_only_for_acceptance_are_read_only(self):
         self.assertEqual(
             target.patch_paths(self.contract()),
@@ -35,6 +43,7 @@ class CodexV6ScopePolicyTests(unittest.TestCase):
             (root / "src/qore/a.py").write_text("x = 1\n", encoding="utf-8")
             (root / "tests").mkdir()
             (root / "tests/test_a.py").write_text("def test_x(): pass\n", encoding="utf-8")
+            self.init_repo(root)
             evidence, allowlist = target.hardened_initial_evidence(root, self.contract(), None)
         self.assertIn("src/qore/new_file.py", allowlist)
         self.assertIn("src/qore/new_file.py", evidence["missing_contract_paths"])
@@ -48,6 +57,7 @@ class CodexV6ScopePolicyTests(unittest.TestCase):
             (root / "src/qore/a.py").write_text("x = 1\n", encoding="utf-8")
             (root / "tests").mkdir()
             (root / "tests/test_a.py").write_text("def test_x(): pass\n", encoding="utf-8")
+            self.init_repo(root)
             evidence, allowlist = target.hardened_initial_evidence(
                 root,
                 {"objective": "Correct src/qore/a.py", "scope": ["src/qore/a.py"], "acceptance": [], "required_tests": [], "forbidden": []},
