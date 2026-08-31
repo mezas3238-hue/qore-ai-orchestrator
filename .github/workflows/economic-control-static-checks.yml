@@ -80,7 +80,8 @@ jobs:
           grep -F '"CLAUDE",' scripts/optimization_activation_policy.py
           grep -F '"SOL_FINAL",' scripts/optimization_activation_policy.py
           grep -F 'MAX_MODEL_CALLS = 2' scripts/run_codex_engineer_worker_v6.py
-          grep -F 'No hidden retry or third model call is permitted.' scripts/run_codex_engineer_worker_v6.py
+          grep -F '"hidden_retries": 0' scripts/run_codex_engineer_worker_v6.py
+          grep -F 'No third model call is permitted.' scripts/run_codex_engineer_worker_v6.py
           grep -F 'ALLOWED_ACTIVATION_MODES = {"CONTROLLED_VALIDATION", "LIMITED_LIVE"}' scripts/run_sol_architect_v3.py
           grep -F 'would_spend_api == false' .github/workflows/qore-economic-shadow-observer.yml
           grep -F 'contents: read' .github/workflows/qore-economic-shadow-observer.yml
