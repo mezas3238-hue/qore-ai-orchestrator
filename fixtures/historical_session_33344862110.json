@@ -1,0 +1,40 @@
+{
+  "schema_version": "qore.historical.ai.cost.baseline.v1",
+  "session_id": "QORE-ORCH-R33344862110",
+  "source_runs": {
+    "sol": [33344862110, 33345013376, 33345705383],
+    "codex": [33344932500, 33345104121, 33345772824],
+    "resume_terminal": 33345849348
+  },
+  "sol": {
+    "calls": 3,
+    "input_tokens": 157643,
+    "cache_write_tokens": 68685,
+    "cached_tokens": 0,
+    "output_tokens": 14728,
+    "model_context_chars": [178419, 179144, 179066],
+    "cost_usd": 0.993817
+  },
+  "codex": {
+    "jobs": 3,
+    "turns": 48,
+    "input_tokens": 1210482,
+    "cached_tokens": 1042560,
+    "output_tokens": 11579,
+    "cost_usd": 0.6384175,
+    "job_summaries": [
+      {"turns": 16, "budget_tokens": 123116, "input_tokens": 446183, "cached_tokens": 385408, "output_tokens": 2975, "changed_files": 0, "materialized_reference_sha": null},
+      {"turns": 16, "budget_tokens": 115047, "input_tokens": 402850, "cached_tokens": 344448, "output_tokens": 2775, "changed_files": 0, "materialized_reference_sha": null},
+      {"turns": 16, "budget_tokens": 126648, "input_tokens": 361449, "cached_tokens": 312704, "output_tokens": 5829, "changed_files": 3, "materialized_reference_sha": "df934e5585f59dd0aef17f9ece108d6f39204470", "first_patch_turn": 16}
+    ]
+  },
+  "observed_orchestrator_spend_usd": 1.632235,
+  "reviewer_spend_included": false,
+  "stop_reason": "CODEX_JOB_CAP_REACHED",
+  "production_authority": false,
+  "notes": [
+    "Observed spend is Sol plus Codex only; independent reviewer cost was not yet incurred in this slice.",
+    "The third Codex job first applied the materialized correction at turn 16 and then crossed its budget edge.",
+    "This fixture is immutable historical evidence for optimization replay, not a current price card."
+  ]
+}
