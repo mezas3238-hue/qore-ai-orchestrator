@@ -40,8 +40,11 @@ MAX_EVIDENCE_CHARS = 180_000
 MAX_FILE_CHARS = 50_000
 MAX_CURRENT_DIFF_CHARS = 60_000
 MAX_QG_FAILURE_CHARS = 24_000
+# The final path character cannot be punctuation that commonly terminates prose.
+# This prevents a sentence such as "add src/qore/new_file.py." from granting a
+# second synthetic path ending in a period while preserving dots inside names.
 PATH_RE = re.compile(
-    r"(?P<path>(?:src|tests|docs|schemas|scripts|charters)/[A-Za-z0-9_.@/+\-]+)"
+    r"(?P<path>(?:src|tests|docs|schemas|scripts|charters)/[A-Za-z0-9_.@/+\-]*[A-Za-z0-9_@+\-])"
 )
 EVIDENCE_REQUEST_RE = re.compile(
     r"^(?P<kind>file|test|symbol):(?P<path>[^#]+?)(?:#(?P<symbol>[A-Za-z_][A-Za-z0-9_.]*))?$"
@@ -220,144 +223,128 @@ def resolve_evidence_requests(repo: Path, requests: Sequence[str]) -> list[dict[
     return results
 
 
-def _response_call(
-    key: str,
-    *,
-    charter: str,
-    source: str,
-    contract_id: str,
-    payload: Mapping[str, Any],
-    usage_total: dict[str, int],
-    phase: str,
-) -> tuple[dict[str, Any], str | None]:
-    response = v2.api_call(
-        key,
-        {
-            "model": MODEL,
-            "instructions": charter,
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": (
-                                "QORE deterministic-first engineering capsule. Repository navigation, reference "
-                                "materialization, and supplied evidence have already been performed by the controller. "
-                                "Do not ask to rediscover supplied facts. Return PATCH only if the bounded evidence is "
-                                "sufficient to implement the exact contract safely. If one concrete file/symbol/test is "
-                                "missing, return NEED_EVIDENCE using only file:path, test:path, or symbol:path#Symbol. "
-                                "Never weaken tests, validation, security boundaries, or Production restrictions.\n\n"
-                                + json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-                            ),
-                        }
-                    ],
-                }
-            ],
-            "reasoning": {"effort": "high"},
-            "text": {
-                "verbosity": "low",
-                "format": {
-                    "type": "json_schema",
-                    "name": "qore_codex_v6_action",
-                    "strict": True,
-                    "schema": RESPONSE_SCHEMA,
-                },
-            },
-            "max_output_tokens": 12_000,
-            "store": False,
-            "prompt_cache_key": PROMPT_CACHE_KEY,
-            "metadata": {
-                "qore_role": "principal_engineer_worker_v6",
-                "qore_main_sha": source,
-                "contract_id": contract_id[:64],
-                "phase": phase,
-            },
-        },
-    )
-    if response.get("status") != "completed":
-        raise v2.WorkerError(f"Codex V6 response did not complete: {response.get('status')}")
-    v2.add_usage(usage_total, response)
-    if v2.spend_equivalent_tokens(usage_total) > MAX_TOTAL_TOKENS:
-        raise v2.WorkerError("Codex V6 exceeded the hard spend-equivalent token budget")
-    rendered = _output_text(response)
-    try:
-        action = json.loads(rendered)
-    except json.JSONDecodeError as exc:
-        raise v2.WorkerError("Codex V6 structured response is invalid JSON") from exc
-    if not isinstance(action, dict):
-        raise v2.WorkerError("Codex V6 structured response is not an object")
-    response_id = response.get("id") if isinstance(response.get("id"), str) else None
-    return action, response_id
-
-
-def _validate_action(action: Mapping[str, Any]) -> tuple[str, str, list[str], str, list[str]]:
-    kind = action.get("action")
-    patch = action.get("patch")
-    requests = action.get("evidence_requests")
-    summary = action.get("summary")
-    notes = action.get("notes")
-    if kind not in {"PATCH", "NEED_EVIDENCE", "BLOCKED"}:
-        raise v2.WorkerError("Codex V6 action is invalid")
-    if not isinstance(patch, str) or not isinstance(requests, list) or not isinstance(summary, str) or not isinstance(notes, list):
-        raise v2.WorkerError("Codex V6 response fields are invalid")
-    if any(not isinstance(item, str) for item in requests + notes):
-        raise v2.WorkerError("Codex V6 response lists must contain strings")
-    if kind == "PATCH" and not patch.strip():
-        raise v2.WorkerError("PATCH action requires a patch")
-    if kind != "PATCH" and patch:
-        raise v2.WorkerError("non-PATCH action must not contain a patch")
-    if kind == "NEED_EVIDENCE" and not requests:
-        raise v2.WorkerError("NEED_EVIDENCE requires concrete requests")
-    if kind != "NEED_EVIDENCE" and requests:
-        raise v2.WorkerError("only NEED_EVIDENCE may request evidence")
-    return kind, patch, [str(x) for x in requests], summary, [str(x) for x in notes]
-
-
-def _apply_allowlisted_patch(
-    tools: v2.LocalTools,
-    patch: str,
-    *,
-    allowlist: Sequence[str],
-) -> dict[str, Any]:
+def _apply_allowlisted_patch(tools: v2.LocalTools, patch: str, *, allowlist: Sequence[str]) -> dict[str, Any]:
     paths = v2.validate_patch_paths(patch)
-    allowed = set(allowlist)
-    if not allowed:
-        raise v2.WorkerError("controller has no changed-file allowlist for model patch")
-    outside = sorted(set(paths) - allowed)
-    if outside:
-        raise v2.WorkerError("model patch touches paths outside controller allowlist: " + ", ".join(outside))
-    result = tools.apply_patch(patch)
-    if result.get("applied") is not True:
-        raise v2.WorkerError("model patch failed deterministic git-apply preflight")
+    forbidden = sorted(set(paths) - set(allowlist))
+    if forbidden:
+        raise v2.WorkerError(
+            "Codex V6 patch touches path outside controller allowlist: " + ", ".join(forbidden)
+        )
+    return tools.apply_patch(patch)
+
+
+def _usage(payload: Mapping[str, Any]) -> dict[str, int]:
+    usage = payload.get("usage") if isinstance(payload.get("usage"), Mapping) else {}
+    details = usage.get("input_tokens_details") if isinstance(usage.get("input_tokens_details"), Mapping) else {}
+    output_details = usage.get("output_tokens_details") if isinstance(usage.get("output_tokens_details"), Mapping) else {}
+    result: dict[str, int] = {}
+    for key, value in (
+        ("input_tokens", usage.get("input_tokens")),
+        ("cached_tokens", details.get("cached_tokens")),
+        ("cache_write_tokens", details.get("cache_write_tokens")),
+        ("output_tokens", usage.get("output_tokens")),
+        ("reasoning_tokens", output_details.get("reasoning_tokens")),
+        ("total_tokens", usage.get("total_tokens")),
+    ):
+        if type(value) is int and value >= 0:
+            result[key] = value
     return result
 
 
+def _add_usage(total: dict[str, int], current: Mapping[str, int]) -> None:
+    for key, value in current.items():
+        total[key] = total.get(key, 0) + value
+
+
+def _response_call(
+    *,
+    key: str,
+    charter: str,
+    source: str,
+    contract_id: str,
+    request: Mapping[str, Any],
+    phase: str,
+    evidence: Mapping[str, Any],
+) -> tuple[dict[str, Any], str | None]:
+    prompt = {
+        "phase": phase,
+        "engineering_request": request,
+        "controller_evidence": evidence,
+        "instructions": (
+            "Use supplied evidence first. Return PATCH immediately when safe. "
+            "Return NEED_EVIDENCE only with concrete file:path, test:path, or symbol:path#Symbol requests. "
+            "Do not request repository navigation, PR discovery, GitHub state, source SHA discovery, or arbitrary shell. "
+            "Return BLOCKED for contradictions or missing capability. Never weaken tests."
+        ),
+    }
+    body = {
+        "model": MODEL,
+        "instructions": charter,
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": json.dumps(prompt, separators=(",", ":"), ensure_ascii=False)}]}],
+        "reasoning": {"effort": "high"},
+        "text": {"verbosity": "low", "format": {"type": "json_schema", "name": "qore_codex_v6_decision", "strict": True, "schema": RESPONSE_SCHEMA}},
+        "max_output_tokens": 7000,
+        "store": False,
+        "prompt_cache_key": PROMPT_CACHE_KEY,
+        "metadata": {
+            "qore_role": "principal_engineer_worker_v6",
+            "qore_main_sha": source,
+            "contract_id": contract_id[:64],
+            "phase": phase,
+        },
+    }
+    payload = v2.api_call(key, body)
+    if payload.get("status") != "completed":
+        raise v2.WorkerError(f"Codex V6 response did not complete: {payload.get('status')}")
+    rendered = _output_text(payload)
+    try:
+        decision = json.loads(rendered)
+    except json.JSONDecodeError as exc:
+        raise v2.WorkerError("Codex V6 structured response is not valid JSON") from exc
+    if not isinstance(decision, dict):
+        raise v2.WorkerError("Codex V6 structured response is not an object")
+    action = decision.get("action")
+    patch = decision.get("patch")
+    requests = decision.get("evidence_requests")
+    if action not in {"PATCH", "NEED_EVIDENCE", "BLOCKED"}:
+        raise v2.WorkerError("Codex V6 returned invalid action")
+    if not isinstance(patch, str) or not isinstance(requests, list):
+        raise v2.WorkerError("Codex V6 response shape is invalid")
+    if action == "PATCH" and not patch.strip():
+        raise v2.WorkerError("PATCH action requires non-empty patch")
+    if action != "PATCH" and patch:
+        raise v2.WorkerError("non-PATCH action must not contain patch")
+    if action != "NEED_EVIDENCE" and requests:
+        raise v2.WorkerError("only NEED_EVIDENCE may contain evidence requests")
+    return decision, payload.get("id") if isinstance(payload.get("id"), str) else None
+
+
 def _qg_failure_evidence(qg: Mapping[str, Any]) -> dict[str, Any]:
-    bounded: list[dict[str, Any]] = []
     results = qg.get("results")
+    bounded: list[dict[str, Any]] = []
+    total = 0
     if isinstance(results, list):
         for item in results:
             if not isinstance(item, Mapping):
                 continue
-            output = str(item.get("output") or "")
-            bounded.append(
-                {
-                    "command": item.get("command"),
-                    "returncode": item.get("returncode"),
-                    "output": output[-MAX_QG_FAILURE_CHARS:],
-                }
-            )
-    return {"success": qg.get("success") is True, "results": bounded}
+            rendered = {
+                "command": item.get("command"),
+                "returncode": item.get("returncode"),
+                "output": str(item.get("output") or "")[:MAX_QG_FAILURE_CHARS],
+            }
+            size = len(json.dumps(rendered, separators=(",", ":"), ensure_ascii=False))
+            if total + size > MAX_QG_FAILURE_CHARS:
+                break
+            bounded.append(rendered)
+            total += size
+    return {"quality_gate_success": False, "results": bounded}
 
 
-def execute_v6(
-    *,
-    key: str,
-    repo: Path,
-    request: dict[str, Any],
-    charter: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+def _blocked_result(repo: Path, source: str, contract_id: str, summary: str, notes: Sequence[str], tools: v2.LocalTools, calls: int) -> dict[str, Any]:
+    return v2.make_result(repo, source, contract_id, "BLOCKED", summary, list(notes), tools, max(1, calls))
+
+
+def execute_v6(*, key: str, repo: Path, request: dict[str, Any], charter: str) -> tuple[dict[str, Any], dict[str, Any]]:
     source, contract = v2.validate_request(request, repo)
     contract_id = str(contract.get("contract_id") or "")
     if not contract_id:
@@ -366,218 +353,102 @@ def execute_v6(
     reference_sha = v4.required_materialized_reference(contract, source)
     materialization: dict[str, Any] | None = None
     if reference_sha is not None:
-        allowed_references = tuple({reference_sha})
-        materialization = v4.materialize_reference_delta(
-            repo,
-            source,
-            reference_sha,
-            allowed_references,
-        )
+        references = v4.v3.contract_reference_shas(contract, source)
+        materialization = v4.materialize_reference_delta(repo, source, reference_sha, references)
 
-    evidence, allowlist = _initial_evidence(repo, contract, materialization)
-    if not allowlist:
-        raise v2.WorkerError(
-            "Codex V6 requires deterministic changed-file allowlist from contract paths or exact reference delta"
-        )
     tools = v2.LocalTools(repo)
+    initial, allowlist = _initial_evidence(repo, contract, materialization)
     usage_total: dict[str, int] = {}
     response_ids: list[str] = []
-    call_count = 0
+    phases: list[str] = []
+    calls = 0
 
-    base_capsule: dict[str, Any] = {
-        "schema_version": "qore.codex.v6.evidence.capsule.v1",
-        "source_main_sha": source,
-        "contract": contract,
-        "changed_file_allowlist": list(allowlist),
-        "forbidden": list(contract.get("forbidden") or []),
-        "evidence": evidence,
-        "missing_evidence_protocol": "file:path | test:path | symbol:path#Symbol",
-        "max_model_calls": MAX_MODEL_CALLS,
-        "production_authority": False,
-    }
-
-    action, response_id = _response_call(
-        key,
+    decision, response_id = _response_call(
+        key=key,
         charter=charter,
         source=source,
         contract_id=contract_id,
-        payload=base_capsule,
-        usage_total=usage_total,
-        phase="initial",
+        request=request,
+        phase="IMPLEMENT",
+        evidence=initial,
     )
-    call_count += 1
+    calls += 1
+    phases.append("IMPLEMENT")
     if response_id:
         response_ids.append(response_id)
-    kind, patch, requests, summary, notes = _validate_action(action)
 
-    if kind == "BLOCKED":
-        final = v2.make_result(repo, source, contract_id, "BLOCKED", summary, notes, tools, call_count)
+    action = decision["action"]
+    if action == "BLOCKED":
+        final = _blocked_result(repo, source, contract_id, str(decision.get("summary") or "Codex V6 blocked."), decision.get("notes") or [], tools, calls)
+    elif action == "NEED_EVIDENCE":
+        continuation = resolve_evidence_requests(repo, decision["evidence_requests"])
+        second, response_id = _response_call(
+            key=key,
+            charter=charter,
+            source=source,
+            contract_id=contract_id,
+            request=request,
+            phase="EVIDENCE_CONTINUATION",
+            evidence={"initial_evidence_digest": hashlib.sha256(json.dumps(initial, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(), "requested_evidence": continuation},
+        )
+        calls += 1
+        phases.append("EVIDENCE_CONTINUATION")
+        if response_id:
+            response_ids.append(response_id)
+        if second["action"] != "PATCH":
+            final = _blocked_result(repo, source, contract_id, "Codex V6 exhausted its single deterministic evidence continuation without producing a patch.", second.get("notes") or [], tools, calls)
+        else:
+            _apply_allowlisted_patch(tools, second["patch"], allowlist=allowlist)
+            qg = tools.run_quality_gate()
+            if qg.get("success") is True:
+                final = v2.make_result(repo, source, contract_id, "READY", str(second.get("summary") or "Codex V6 candidate passed QG."), ["Evidence-first V6 used at most two model calls.", "READY is engineering-only; semantic/reviewer/final Sol gates remain mandatory."], tools, calls)
+            else:
+                final = _blocked_result(repo, source, contract_id, "Codex V6 used its only continuation before Quality Gate; failed QG requires a fresh bounded engineering task.", ["No third model call is permitted."], tools, calls)
     else:
-        if kind == "NEED_EVIDENCE":
-            requested = resolve_evidence_requests(repo, requests)
-            followup = {
-                **base_capsule,
-                "continuation_reason": "deterministic_evidence_requested",
-                "requested_evidence": requested,
-                "current_diff": _candidate_diff(repo),
-                "previous_summary": summary,
-            }
-            action, response_id = _response_call(
-                key,
+        _apply_allowlisted_patch(tools, decision["patch"], allowlist=allowlist)
+        qg = tools.run_quality_gate()
+        if qg.get("success") is True:
+            final = v2.make_result(repo, source, contract_id, "READY", str(decision.get("summary") or "Codex V6 candidate passed QG."), ["Evidence-first V6 completed in one model call.", "READY is engineering-only; semantic/reviewer/final Sol gates remain mandatory."], tools, calls)
+        else:
+            second, response_id = _response_call(
+                key=key,
                 charter=charter,
                 source=source,
                 contract_id=contract_id,
-                payload=followup,
-                usage_total=usage_total,
-                phase="evidence_continuation",
+                request=request,
+                phase="QG_CORRECTION",
+                evidence={"candidate_diff": _candidate_diff(repo), "qg_failure": _qg_failure_evidence(qg)},
             )
-            call_count += 1
+            calls += 1
+            phases.append("QG_CORRECTION")
             if response_id:
                 response_ids.append(response_id)
-            kind, patch, requests, summary, notes = _validate_action(action)
-            if kind == "NEED_EVIDENCE":
-                final = v2.make_result(
-                    repo,
-                    source,
-                    contract_id,
-                    "BLOCKED",
-                    "Codex V6 exhausted its single deterministic evidence continuation.",
-                    notes + ["No hidden retry or third model call is permitted."],
-                    tools,
-                    call_count,
-                )
-            elif kind == "BLOCKED":
-                final = v2.make_result(repo, source, contract_id, "BLOCKED", summary, notes, tools, call_count)
+            if second["action"] != "PATCH":
+                final = _blocked_result(repo, source, contract_id, "Codex V6 correction call did not produce a patch.", second.get("notes") or [], tools, calls)
             else:
-                _apply_allowlisted_patch(tools, patch, allowlist=allowlist)
-                qg = tools.run_quality_gate()
-                if qg.get("success") is True:
-                    final = v2.make_result(
-                        repo,
-                        source,
-                        contract_id,
-                        "READY",
-                        summary,
-                        notes + ["V6 deterministic full Quality Gate passed after one evidence continuation."],
-                        tools,
-                        call_count,
-                    )
+                _apply_allowlisted_patch(tools, second["patch"], allowlist=allowlist)
+                qg2 = tools.run_quality_gate()
+                if qg2.get("success") is True:
+                    final = v2.make_result(repo, source, contract_id, "READY", str(second.get("summary") or "Codex V6 corrected candidate passed QG."), ["One implementation call plus one QG-correction call.", "No third model call was made."], tools, calls)
                 else:
-                    final = v2.make_result(
-                        repo,
-                        source,
-                        contract_id,
-                        "BLOCKED",
-                        "Codex V6 patch failed the full Quality Gate after the evidence continuation.",
-                        notes + ["A third model call is forbidden."],
-                        tools,
-                        call_count,
-                    )
-        else:
-            _apply_allowlisted_patch(tools, patch, allowlist=allowlist)
-            qg = tools.run_quality_gate()
-            if qg.get("success") is True:
-                final = v2.make_result(
-                    repo,
-                    source,
-                    contract_id,
-                    "READY",
-                    summary,
-                    notes + ["V6 deterministic full Quality Gate passed after the initial patch."],
-                    tools,
-                    call_count,
-                )
-            else:
-                if call_count >= MAX_MODEL_CALLS:
-                    final = v2.make_result(
-                        repo,
-                        source,
-                        contract_id,
-                        "BLOCKED",
-                        "Codex V6 full Quality Gate failed and no correction call remains.",
-                        notes,
-                        tools,
-                        call_count,
-                    )
-                else:
-                    correction_capsule = {
-                        **base_capsule,
-                        "continuation_reason": "quality_gate_correction",
-                        "current_diff": _candidate_diff(repo),
-                        "quality_gate_failure": _qg_failure_evidence(qg),
-                        "instruction": (
-                            "Return one smallest correction PATCH for the existing candidate. Do not revert valid "
-                            "reference materialization or broaden scope."
-                        ),
-                    }
-                    action, response_id = _response_call(
-                        key,
-                        charter=charter,
-                        source=source,
-                        contract_id=contract_id,
-                        payload=correction_capsule,
-                        usage_total=usage_total,
-                        phase="qg_correction",
-                    )
-                    call_count += 1
-                    if response_id:
-                        response_ids.append(response_id)
-                    kind, patch, requests, correction_summary, correction_notes = _validate_action(action)
-                    if kind != "PATCH":
-                        final = v2.make_result(
-                            repo,
-                            source,
-                            contract_id,
-                            "BLOCKED",
-                            correction_summary,
-                            correction_notes + ["V6 correction continuation did not return a patch."],
-                            tools,
-                            call_count,
-                        )
-                    else:
-                        _apply_allowlisted_patch(tools, patch, allowlist=allowlist)
-                        qg2 = tools.run_quality_gate()
-                        if qg2.get("success") is True:
-                            final = v2.make_result(
-                                repo,
-                                source,
-                                contract_id,
-                                "READY",
-                                correction_summary,
-                                correction_notes + ["V6 deterministic full Quality Gate passed after one correction."],
-                                tools,
-                                call_count,
-                            )
-                        else:
-                            final = v2.make_result(
-                                repo,
-                                source,
-                                contract_id,
-                                "BLOCKED",
-                                "Codex V6 correction failed the full Quality Gate.",
-                                correction_notes + ["No hidden retry or third model call is permitted."],
-                                tools,
-                                call_count,
-                            )
+                    final = _blocked_result(repo, source, contract_id, "Codex V6 second and final model call did not produce a green Quality Gate.", ["No third model call is permitted."], tools, calls)
 
     usage = {
-        **usage_total,
         "model": MODEL,
         "worker_version": WORKER_VERSION,
         "prompt_cache_key": PROMPT_CACHE_KEY,
-        "response_ids": response_ids,
-        "model_calls": call_count,
+        "model_calls": calls,
         "max_model_calls": MAX_MODEL_CALLS,
         "max_total_tokens": MAX_TOTAL_TOKENS,
-        "budget_formula_version": v2.BUDGET_FORMULA_VERSION,
-        "budget_tokens": v2.spend_equivalent_tokens(usage_total),
-        "reference_sha": reference_sha,
-        "materialization_evidence": materialization,
-        "changed_file_allowlist": list(allowlist),
-        "deterministic_evidence_first": True,
+        "phases": phases,
+        "response_ids": response_ids,
+        "reference_materialized": reference_sha is not None,
+        "materialized_reference_sha": reference_sha,
+        "exploration_turns": 0,
         "hidden_retries": 0,
         "production_authority": False,
     }
+    usage.update(usage_total)
     return final, usage
 
 
@@ -589,7 +460,6 @@ def main() -> int:
     parser.add_argument("--output", required=True)
     parser.add_argument("--usage-output", required=True)
     args = parser.parse_args()
-
     key = os.environ.get("OPENAI_CODEX_API_KEY", "").strip()
     if not key:
         print("OPENAI_CODEX_API_KEY is not configured.", file=sys.stderr)
@@ -600,23 +470,16 @@ def main() -> int:
         raise v2.WorkerError("engineering request is not an object")
     charter = Path(args.charter).read_text(encoding="utf-8")
     final, usage = execute_v6(key=key, repo=repo, request=request, charter=charter)
-    output = Path(args.output)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(final, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    usage_path = Path(args.usage_output)
-    usage_path.parent.mkdir(parents=True, exist_ok=True)
-    usage_path.write_text(json.dumps(usage, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    print(
-        "CODEX_ENGINEER_WORKER_V6_OK status={} main={} calls={} changed_files={}".format(
-            final["status"], final["source_main_sha"], usage["model_calls"], len(final["changed_files"])
-        )
-    )
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output).write_text(json.dumps(final, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    Path(args.usage_output).write_text(json.dumps(usage, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(f"CODEX_ENGINEER_WORKER_V6_OK status={final['status']} model_calls={usage['model_calls']} exploration_turns=0")
     return 0
 
 
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (v2.WorkerError, json.JSONDecodeError, OSError, subprocess.TimeoutExpired) as exc:
+    except v2.WorkerError as exc:
         print(f"CODEX_ENGINEER_WORKER_V6_ERROR: {exc}", file=sys.stderr)
-        raise SystemExit(8)
+        raise SystemExit(8) from exc
