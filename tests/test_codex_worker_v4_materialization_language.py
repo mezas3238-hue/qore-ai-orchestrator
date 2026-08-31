@@ -34,10 +34,29 @@ class CodexWorkerV4MaterializationLanguageTests(unittest.TestCase):
         }
         self.assertEqual(v4.required_materialized_reference(contract, source), reference)
 
+    def test_live_implementation_reference_contract_is_recognized(self) -> None:
+        source = "a" * 40
+        reference = "b" * 40
+        contract = {
+            "objective": (
+                "Correct the two credential-hygiene gaps while preserving the cumulative work. "
+                f"Use exact PR HEAD {reference} as the implementation reference atop source main."
+            )
+        }
+        self.assertEqual(v4.required_materialized_reference(contract, source), reference)
+
     def test_read_only_reference_still_does_not_materialize(self) -> None:
         source = "a" * 40
         reference = "b" * 40
         contract = {"objective": f"Compare exact historical head {reference} read-only."}
+        self.assertIsNone(v4.required_materialized_reference(contract, source))
+
+    def test_comparison_reference_wording_still_does_not_materialize(self) -> None:
+        source = "a" * 40
+        reference = "b" * 40
+        contract = {
+            "objective": f"Use exact PR HEAD {reference} as a comparison reference atop source main."
+        }
         self.assertIsNone(v4.required_materialized_reference(contract, source))
 
     def test_explicit_materialization_with_multiple_references_fails_closed(self) -> None:
