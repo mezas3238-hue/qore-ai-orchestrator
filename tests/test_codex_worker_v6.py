@@ -75,7 +75,7 @@ class CodexWorkerV6Tests(unittest.TestCase):
             "summary": "bounded fix",
             "notes": [],
         }, "resp-1")
-        with patch.object(target.v2.LocalTools, "run_quality_gate", target.CodexWorkerV6Tests.green_qg):
+        with patch.object(target.v2.LocalTools, "run_quality_gate", CodexWorkerV6Tests.green_qg):
             final, usage = target.execute_v6(
                 key="fake",
                 repo=root,
