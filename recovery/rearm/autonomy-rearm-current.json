@@ -1,7 +1,7 @@
 {
   "schema_version": "qore.autonomy.rearm.request.v1",
-  "stopped_resume_run_id": 33338701499,
+  "stopped_resume_run_id": 33342105358,
   "confirmation": "REARM_BOUNDED_AUTONOMY",
-  "reason": "User explicitly authorized continuing until all existing autonomous orchestration defects are resolved. Start exactly one new bounded validation tranche after Codex worker V4 deterministic cumulative historical-reference materialization was integrated on orchestrator main and post-merge static checks passed.",
+  "reason": "User explicitly authorized REARM_BOUNDED_AUTONOMY for stopped resume run 33342105358 after the bounded session correctly stopped at CODEX_JOB_CAP_REACHED. Start exactly one new bounded validation tranche using orchestrator main after Codex V4 cumulative-descendant materialization language was hardened in PR #52 and post-merge static checks passed.",
   "production_authority": false
 }
