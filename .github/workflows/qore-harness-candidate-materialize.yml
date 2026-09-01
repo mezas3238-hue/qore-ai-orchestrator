@@ -1,0 +1,176 @@
+name: QORE Harness candidate materialize
+run-name: Harness materialize · ${{ github.event.head_commit.message }}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "materialize/harness-current.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qore-harness-candidate-materialize
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Enforce trusted default branch
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+
+      - name: Checkout trusted orchestrator infrastructure
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Validate immutable materialization request
+        id: req
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          p=Path('materialize/harness-current.json')
+          v=json.loads(p.read_text())
+          if v.get('schema_version')!='qore.harness.materialize.request.v1': raise SystemExit('bad schema')
+          if v.get('repository')!='mezas3238-hue/qore-core': raise SystemExit('bad repo')
+          if v.get('production_authority') is not False: raise SystemExit('Production authority forbidden')
+          if type(v.get('pr_number')) is not int or v['pr_number']<=0: raise SystemExit('bad PR')
+          for k in ('expected_head','expected_tree'):
+              if not isinstance(v.get(k),str) or not re.fullmatch(r'[0-9a-f]{40}',v[k]): raise SystemExit(f'bad {k}')
+          if not isinstance(v.get('target_branch'),str) or not v['target_branch'] or v['target_branch'] in {'main','master'}: raise SystemExit('bad branch')
+          if not isinstance(v.get('patch_sha256'),str) or not re.fullmatch(r'[0-9a-f]{64}',v['patch_sha256']): raise SystemExit('bad patch sha')
+          parts=v.get('patch_parts')
+          if not isinstance(parts,list) or not parts or len(parts)!=len(set(parts)): raise SystemExit('bad patch parts')
+          for part in parts:
+              if not isinstance(part,str) or not part.startswith('materialize/') or '..' in part or not Path(part).is_file(): raise SystemExit('bad patch part')
+          files=v.get('expected_blob_shas')
+          if not isinstance(files,dict) or not files: raise SystemExit('bad blob map')
+          for path,sha in files.items():
+              if not isinstance(path,str) or path.startswith('/') or '..' in path: raise SystemExit('bad path')
+              if not isinstance(sha,str) or not re.fullmatch(r'[0-9a-f]{40}',sha): raise SystemExit('bad blob sha')
+          with open(os.environ['GITHUB_OUTPUT'],'a') as out:
+              for k in ('pr_number','expected_head','expected_tree','target_branch','package_id','patch_sha256'):
+                  out.write(f"{k}={v[k]}\n")
+          PY
+
+      - name: Verify bounded qore-core engineering authority
+        env:
+          QORE_CODEX_ENGINEER_TOKEN: ${{ secrets.QORE_CODEX_ENGINEER_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$QORE_CODEX_ENGINEER_TOKEN"
+          python3 scripts/preflight_codex_engineer_token.py
+
+      - name: Decode and authenticate exact Harness patch
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, json
+          from pathlib import Path
+          v=json.loads(Path('materialize/harness-current.json').read_text())
+          encoded=''.join(Path(p).read_text().strip() for p in v['patch_parts'])
+          raw=base64.b64decode(encoded, validate=True)
+          observed=hashlib.sha256(raw).hexdigest()
+          if observed!=v['patch_sha256']: raise SystemExit(f'patch sha mismatch {observed}')
+          Path('materialize/candidate.patch').write_bytes(raw)
+          print(f'Authenticated Harness patch sha256={observed}')
+          PY
+
+      - name: Verify live PR binding before checkout
+        env:
+          GH_TOKEN: ${{ secrets.QORE_CODEX_ENGINEER_TOKEN }}
+          PR_NUMBER: ${{ steps.req.outputs.pr_number }}
+          EXPECTED_HEAD: ${{ steps.req.outputs.expected_head }}
+          TARGET_BRANCH: ${{ steps.req.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          PR="$(gh api "repos/mezas3238-hue/qore-core/pulls/${PR_NUMBER}")"
+          test "$(jq -r '.state' <<<"$PR")" = open
+          test "$(jq -r '.merged' <<<"$PR")" = false
+          test "$(jq -r '.draft' <<<"$PR")" = true
+          test "$(jq -r '.head.ref' <<<"$PR")" = "$TARGET_BRANCH"
+          test "$(jq -r '.head.sha' <<<"$PR")" = "$EXPECTED_HEAD"
+
+      - name: Checkout exact qore-core starting candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: mezas3238-hue/qore-core
+          ref: ${{ steps.req.outputs.expected_head }}
+          token: ${{ secrets.QORE_CODEX_ENGINEER_TOKEN }}
+          path: workspace/qore-core
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Apply exact patch and create one deterministic commit
+        working-directory: workspace/qore-core
+        env:
+          EXPECTED_HEAD: ${{ steps.req.outputs.expected_head }}
+          EXPECTED_TREE: ${{ steps.req.outputs.expected_tree }}
+          PACKAGE_ID: ${{ steps.req.outputs.package_id }}
+        run: |
+          set -euo pipefail
+          REQUEST="$GITHUB_WORKSPACE/materialize/harness-current.json"
+          PATCH="$GITHUB_WORKSPACE/materialize/candidate.patch"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$(git show -s --format=%T HEAD)" = "$EXPECTED_TREE"
+          test -z "$(git status --porcelain)"
+          git apply --check "$PATCH"
+          git apply --index "$PATCH"
+          git diff --cached --check
+          git diff --cached --name-only | sort > actual-files.txt
+          jq -r '.expected_blob_shas | keys[]' "$REQUEST" | sort > expected-files.txt
+          diff -u expected-files.txt actual-files.txt
+          while IFS=$'\t' read -r path sha; do
+            test "$(git hash-object "$path")" = "$sha"
+          done < <(jq -r '.expected_blob_shas | to_entries[] | [.key,.value] | @tsv' "$REQUEST")
+          EPOCH="$(( $(git show -s --format=%ct "$EXPECTED_HEAD") + 1 ))"
+          export GIT_AUTHOR_NAME='QORE Harness Materializer'
+          export GIT_AUTHOR_EMAIL='qore-harness-materializer@users.noreply.github.com'
+          export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          export GIT_AUTHOR_DATE="${EPOCH} +0000"
+          export GIT_COMMITTER_DATE="${EPOCH} +0000"
+          git commit -m 'Materialize accepted Harness candidate' -m "Artifact: ${PACKAGE_ID}"
+          test "$(git show -s --format=%P HEAD)" = "$EXPECTED_HEAD"
+          git rev-parse HEAD > "$RUNNER_TEMP/materialized-head"
+          git show -s --format=%T HEAD > "$RUNNER_TEMP/materialized-tree"
+
+      - name: Revalidate PR and atomically advance its branch
+        working-directory: workspace/qore-core
+        env:
+          GH_TOKEN: ${{ secrets.QORE_CODEX_ENGINEER_TOKEN }}
+          QORE_CODEX_ENGINEER_TOKEN: ${{ secrets.QORE_CODEX_ENGINEER_TOKEN }}
+          PR_NUMBER: ${{ steps.req.outputs.pr_number }}
+          EXPECTED_HEAD: ${{ steps.req.outputs.expected_head }}
+          TARGET_BRANCH: ${{ steps.req.outputs.target_branch }}
+        run: |
+          set -euo pipefail
+          PR="$(gh api "repos/mezas3238-hue/qore-core/pulls/${PR_NUMBER}")"
+          test "$(jq -r '.state' <<<"$PR")" = open
+          test "$(jq -r '.merged' <<<"$PR")" = false
+          test "$(jq -r '.draft' <<<"$PR")" = true
+          test "$(jq -r '.head.ref' <<<"$PR")" = "$TARGET_BRANCH"
+          test "$(jq -r '.head.sha' <<<"$PR")" = "$EXPECTED_HEAD"
+          cat > "$RUNNER_TEMP/askpass.sh" <<'SH'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s\n' 'x-access-token' ;;
+            *Password*) printf '%s\n' "$QORE_CODEX_ENGINEER_TOKEN" ;;
+            *) exit 1 ;;
+          esac
+          SH
+          chmod 700 "$RUNNER_TEMP/askpass.sh"
+          export GIT_ASKPASS="$RUNNER_TEMP/askpass.sh" GIT_TERMINAL_PROMPT=0
+          NEW_HEAD="$(cat "$RUNNER_TEMP/materialized-head")"
+          git push --force-with-lease="refs/heads/${TARGET_BRANCH}:${EXPECTED_HEAD}" origin "${NEW_HEAD}:refs/heads/${TARGET_BRANCH}"
+          LIVE="$(gh api "repos/mezas3238-hue/qore-core/pulls/${PR_NUMBER}" --jq '.head.sha')"
+          test "$LIVE" = "$NEW_HEAD"
+          echo "MATERIALIZED_HEAD=$NEW_HEAD"
+          echo "MATERIALIZED_TREE=$(cat "$RUNNER_TEMP/materialized-tree")"

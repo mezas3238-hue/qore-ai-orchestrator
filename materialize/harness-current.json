@@ -1,0 +1,22 @@
+{
+  "schema_version": "qore.harness.materialize.request.v1",
+  "repository": "mezas3238-hue/qore-core",
+  "pr_number": 466,
+  "target_branch": "agent/qore-umi14-corr-umi13-recursive-revalidation-001",
+  "package_id": "HARNESS-ENGINEER-PR466-5205B663-ACCEPTED-CLOSURE-004",
+  "source_run_id": 33532114120,
+  "source_artifact_id": 9811119469,
+  "source_artifact_digest": "sha256:43602ff9baf735a8dfbe87964c7e39e30ab67aa1c98886ebcadbaf465b1fae60",
+  "patch_parts": [
+    "materialize/harness-pr466-accepted-closure-004.patch.b64.part1",
+    "materialize/harness-pr466-accepted-closure-004.patch.b64.part2"
+  ],
+  "patch_sha256": "152f382dd4a701952ab4ead0891cc15377b550107e7adcb7b1526e1f70d8b2d0",
+  "expected_head": "5205b663579e35a711446da03a483c57ea786476",
+  "expected_tree": "0a949120777c43362620fc4d5f047b1d9f5d2d0f",
+  "expected_blob_shas": {
+    "src/qore/infrastructure/instrument_universe_registry.py": "30e08dfc3111a83d1bed401ff7ff00230bd19a01",
+    "tests/infrastructure/test_instrument_universe_registry_accepted_closure_004.py": "aa2511135cc8f25557411abcc276671862a8701a"
+  },
+  "production_authority": false
+}
